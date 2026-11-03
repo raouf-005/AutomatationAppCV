@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>StageAuto</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--fg:#1b2230;--muted:#5d6878;--line:#dfe3ea;--accent:#2457a6;--ok:#1f7a4d;--warn:#b26b00;--bad:#b3261e;--chip:#eef2f8;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#11151b;--card:#181e27;--fg:#e3e8ef;--muted:#98a3b3;--line:#2a323e;--accent:#8db4f0;--ok:#5cc28e;--warn:#e0a34a;--bad:#f08a80;--chip:#222a36;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#11151b;--card:#181e27;--fg:#e3e8ef;--muted:#98a3b3;--line:#2a323e;--accent:#8db4f0;--ok:#5cc28e;--warn:#e0a34a;--bad:#f08a80;--chip:#222a36;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
+h1{font-size:18px;margin:0 8px 0 0}
+h2{font-size:14px;margin:0 0 10px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+main{max-width:1240px;margin:0 auto;padding:18px 16px;display:grid;gap:16px}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}
+button,.btn{font:inherit;border:1px solid var(--line);background:var(--chip);color:var(--fg);border-radius:7px;padding:6px 12px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button:disabled{opacity:.5;cursor:default}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:99px;background:var(--chip);font-size:13px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
+.ok{background:var(--ok)}.bad{background:var(--bad)}.warn{background:var(--warn)}
+.row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.row:last-child{border-bottom:0}
+.row .grow{flex:1;min-width:120px}
+.muted{color:var(--muted)}
+.alert{background:color-mix(in srgb,var(--warn) 14%,var(--card));border:1px solid var(--warn);border-radius:10px;padding:10px 14px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.tablewrap{overflow-x:auto}
+nav.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+nav.tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+pre.log{max-height:420px;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;font:12px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap;margin:0}
+label.f{display:grid;gap:4px;margin:8px 0}
+input[type=text],input[type=password],input[type=number],textarea,select{font:inherit;width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg)}
+textarea{min-height:90px}
+.kpi{display:flex;gap:18px;flex-wrap:wrap}.kpi b{font-size:22px;display:block}
+a{color:var(--accent)}
+.st{font-size:12px;padding:2px 8px;border-radius:99px;background:var(--chip);white-space:nowrap}
+.st.applied{background:color-mix(in srgb,var(--ok) 20%,var(--card))}.st.error,.st.blocked_login{background:color-mix(in srgb,var(--bad) 18%,var(--card))}
+@media (max-width:600px){header{padding:10px 16px}main{padding:12px 16px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>StageAuto</h1>
+  <span class="pill" id="phase"><span class="dot" id="phdot"></span><span id="phtxt">…</span></span>
+  <span style="flex:1"></span>
+  <button class="primary" id="runbtn" onclick="api('/api/run','POST')">Lancer un passage</button>
+  <button onclick="api('/api/stop','POST')">Arrêter</button>
+</header>
+<main>
+  <div id="alerts"></div>
+  <div class="grid">
+    <section class="card">
+      <h2>Aujourd'hui</h2>
+      <div class="kpi" id="kpi"></div>
+      <div id="applied" style="margin-top:10px"></div>
+    </section>
+    <section class="card">
+      <h2>Connexions</h2>
+      <div class="row"><span class="dot" id="extdot"></span><span class="grow">Extension Chrome (ton Chrome)</span><span class="muted" id="exttxt"></span></div>
+      <div class="row"><span class="dot" id="keydot"></span><span class="grow">Clé API Claude</span><span class="muted" id="keytxt"></span></div>
+      <div id="conns"></div>
+      <div style="margin-top:8px"><button onclick="api('/api/check_connections','POST')">Vérifier les connexions</button></div>
+    </section>
+  </div>
+  <section class="card" id="reviewcard" hidden>
+    <h2>À valider (mode validation)</h2><div id="review"></div>
+  </section>
+  <section class="card">
+    <nav class="tabs" id="tabs">
+      <button data-t="offres" class="on">Offres</button><button data-t="contacts">Contacts LinkedIn</button>
+      <button data-t="journal">Journal</button><button data-t="notes">Méthodes apprises</button><button data-t="reglages">Réglages</button>
+    </nav>
+    <div data-p="offres">
+      <div class="row" style="border:0"><select id="ofilter" style="max-width:240px" onchange="loadOffers()">
+        <option value="">Toutes (7 jours)</option><option value="applied">Postulées</option><option value="ready">À valider</option>
+        <option value="blocked_login">En attente de connexion</option><option value="ignored">Ignorées</option><option value="error">Erreurs</option></select></div>
+      <div class="tablewrap"><table><thead><tr><th>Entreprise</th><th>Offre</th><th>Site</th><th>Statut</th><th>Détail</th><th>PDF</th></tr></thead><tbody id="otable"></tbody></table></div>
+    </div>
+    <div data-p="contacts" hidden><div class="tablewrap"><table><thead><tr><th>Date</th><th>Entreprise</th><th>Personne</th><th>Rôle</th><th>Statut</th></tr></thead><tbody id="ctable"></tbody></table></div></div>
+    <div data-p="journal" hidden><pre class="log" id="log"></pre><p class="muted" id="summary"></p></div>
+    <div data-p="notes" hidden><div id="notes" class="muted">…</div></div>
+    <div data-p="reglages" hidden>
+      <div class="grid">
+        <div>
+          <h2>Clé API Claude</h2>
+          <label class="f">Clé (stockée dans le Gestionnaire d'identification Windows)<input type="password" id="apikey" placeholder="sk-ant-…"></label>
+          <button onclick="saveKey()">Enregistrer la clé</button>
+          <h2 style="margin-top:18px">Identifiants des sites</h2>
+          <p class="muted">Importer un export CSV d'un coffre Proton Pass contenant uniquement les sites d'emploi (le fichier est supprimé après import). Les mots de passe ne sont jamais montrés à Claude.</p>
+          <input type="file" id="proton" accept=".csv"> <button onclick="importProton()">Importer Proton Pass</button>
+          <div id="credlist" style="margin-top:10px"></div>
+          <label class="f">Site<select id="credsite"></select></label>
+          <label class="f">Identifiant<input type="text" id="creduser" autocomplete="off"></label>
+          <label class="f">Mot de passe<input type="password" id="credpwd" autocomplete="new-password"></label>
+          <button onclick="saveCred()">Enregistrer</button>
+        </div>
+        <div>
+          <h2>Fonctionnement</h2>
+          <label class="f"><span><input type="checkbox" id="s_auto_submit"> Envoyer automatiquement (sinon : tout remplir puis attendre ta validation)</span></label>
+          <label class="f">Navigateur<select id="s_browser_backend"><option value="extension">Mon Chrome (extension StageAuto Bridge)</option><option value="playwright">Chrome dédié (profil StageAuto)</option></select></label>
+          <label class="f">Heures des passages (HH:MM, séparées par des virgules)<input type="text" id="s_schedule"></label>
+          <label class="f">Max candidatures par passage<input type="number" id="s_max_applications_per_pass"></label>
+          <label class="f">Max par entreprise et par jour<input type="number" id="s_max_per_company_per_day"></label>
+          <label class="f">Invitations LinkedIn / jour<input type="number" id="s_max_invites_per_day"></label>
+          <label class="f">InMails / jour<input type="number" id="s_max_inmails_per_day"></label>
+          <label class="f">Effort de l'agent (low = rapide et économique)<select id="s_agent_effort"><option>low</option><option>medium</option><option>high</option></select></label>
+          <label class="f">Sujet ntfy.sh pour les notifications téléphone (facultatif)<input type="text" id="s_ntfy_topic"></label>
+          <label class="f">Index du compte Gmail dans Chrome (u/0, u/1…)<input type="number" id="s_gmail_index"></label>
+        </div>
+        <div>
+          <h2>Recherche</h2>
+          <label class="f">Mots-clés (un par ligne)<textarea id="s_keywords"></textarea></label>
+          <label class="f">Recherches LinkedIn (2 au plus)<textarea id="s_linkedin_searches"></textarea></label>
+          <label class="f">Entreprises SmartRecruiters (identifiants, un par ligne)<textarea id="s_smartrecruiters_companies"></textarea></label>
+          <label class="f">Adresse JobTeaser (espace école)<input type="text" id="s_jobteaser_base"></label>
+          <label class="f">Certificats à joindre (PDF)<input type="text" id="s_certificats_pdf"></label>
+          <label class="f">Réponses personnalisées (JSON « question » : « réponse »)<textarea id="s_custom_answers"></textarea></label>
+          <div id="sitesen"></div>
+          <button class="primary" onclick="saveSettings()">Enregistrer les réglages</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(u, m = 'GET', body) {
+  const r = await fetch(u, {method: m, headers: body ? {'content-type': 'application/json'} : {}, body: body ? JSON.stringify(body) : undefined});
+  try { return await r.json(); } catch (e) { return null; }
+}
+let S = {}, SITES = {};
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('[data-p]').forEach(p => p.hidden = p.dataset.p !== b.dataset.t);
+  if (b.dataset.t === 'offres') loadOffers(); if (b.dataset.t === 'contacts') loadContacts();
+  if (b.dataset.t === 'notes') loadNotes(); if (b.dataset.t === 'reglages') loadSettings();
+});
+function pdfLinks(folder) { return folder ? `<a href="/files?path=${encodeURIComponent(folder)}" target="_blank" title="${esc(folder)}">dossier</a>` : ''; }
+async function refresh() {
+  const d = await api('/api/state'); if (!d) return;
+  SITES = d.sites; const st = d.state;
+  $('#phtxt').textContent = st.running ? `${st.phase} ${st.detail || ''}` : (st.phase === 'terminé' ? `Terminé à ${(st.ended || '').slice(11, 16)}` : 'En attente');
+  $('#phdot').className = 'dot ' + (st.running ? 'warn' : 'ok');
+  $('#runbtn').disabled = st.running;
+  $('#extdot').className = 'dot ' + (d.extension ? 'ok' : (d.backend === 'extension' ? 'bad' : ''));
+  $('#exttxt').textContent = d.extension ? 'connectée' : (d.backend === 'extension' ? 'non connectée' : 'non utilisée');
+  $('#keydot').className = 'dot ' + (d.api_key ? 'ok' : 'bad'); $('#keytxt').textContent = d.api_key ? 'enregistrée' : 'à ajouter (Réglages)';
+  $('#conns').innerHTML = Object.entries(d.sites).map(([k, n]) => {
+    const c = st.connections[k]; const cls = c === true ? 'ok' : c === false ? 'bad' : '';
+    return `<div class="row"><span class="dot ${cls}"></span><span class="grow">${esc(n)}${d.creds[k] ? ' <span class="muted">(identifiants enregistrés)</span>' : ''}</span>
+      <button onclick="api('/api/open_login/${k}','POST')">Se connecter</button></div>`; }).join('') +
+    `<div class="row"><span class="dot"></span><span class="grow">Gmail</span><button onclick="api('/api/open_login/gmail','POST')">Se connecter</button></div>`;
+  const c = d.counts;
+  $('#kpi').innerHTML = [['Postulées', (d.applied_today || []).length], ['Trouvées', Object.values(c).reduce((a, b) => a + b, 0)],
+    ['Ignorées', c.ignored || 0], ['Invitations', d.invites_today], ['InMails', d.inmails_today], ['Total postulées', d.total_applied]]
+    .map(([l, v]) => `<div><b>${v}</b><span class="muted">${l}</span></div>`).join('');
+  $('#applied').innerHTML = (d.applied_today || []).map(o => `<div class="row"><span class="grow"><b>${esc(o.company)}</b> — ${esc(o.title)}</span>
+     <a href="${esc(o.url)}" target="_blank">offre</a> ${pdfLinks(o.folder)}</div>`).join('') || '<span class="muted">Aucune candidature aujourd\'hui.</span>';
+  const al = [];
+  if (st.needs_login && st.needs_login.length) al.push(`Connexion requise : ${st.needs_login.map(k => SITES[k] || k).join(', ')} — connecte-toi puis relance (les offres sont réessayées).`);
+  (d.alerts || []).slice(-3).reverse().forEach(a => al.push(`${a.t} — <b>${esc(a.title)}</b> ${esc(a.body)}`));
+  $('#alerts').innerHTML = al.map(a => `<div class="alert" style="margin-bottom:8px">${a.includes('<b>') ? a : esc(a)}</div>`).join('');
+  const rv = Object.entries(st.review || {});
+  $('#reviewcard').hidden = !rv.length;
+  $('#review').innerHTML = rv.map(([k, r]) => `<div class="row"><span class="grow"><b>${esc(r.company)}</b> — ${esc(r.title)} <span class="muted">(onglet ouvert dans Chrome)</span></span>
+    <button class="primary" onclick="api('/api/review/${encodeURIComponent(k)}?action=submit','POST')">Envoyer</button>
+    <button onclick="api('/api/review/${encodeURIComponent(k)}?action=discard','POST')">Abandonner</button></div>`).join('');
+  $('#log').textContent = d.log.join('\n'); $('#summary').textContent = st.summary || '';
+}
+async function loadOffers() {
+  const rows = await api('/api/offers?status=' + $('#ofilter').value) || [];
+  $('#otable').innerHTML = rows.map(o => `<tr><td>${esc(o.company)}</td><td><a href="${esc(o.url)}" target="_blank">${esc(o.title)}</a></td>
+    <td>${esc(o.site)}</td><td><span class="st ${esc(o.status)}">${esc(o.status)}</span></td><td class="muted">${esc((o.reason || '').slice(0, 140))}</td><td>${pdfLinks(o.folder)}</td></tr>`).join('');
+}
+async function loadContacts() {
+  const rows = await api('/api/contacts') || [];
+  $('#ctable').innerHTML = rows.map(c => `<tr><td>${esc(c.date)}</td><td>${esc(c.company)}</td><td>${c.profile_url ? `<a href="${esc(c.profile_url)}" target="_blank">${esc(c.name)}</a>` : esc(c.name)}</td><td class="muted">${esc(c.role)}</td><td>${esc(c.status)}</td></tr>`).join('');
+}
+async function loadNotes() {
+  const n = await api('/api/notes') || {};
+  $('#notes').innerHTML = Object.entries(n).map(([s, m]) => `<div class="row" style="display:block"><b>${esc(s)}</b>${m.stats ? ` <span class="muted">(${m.stats.n} passages, ${m.stats.avg} s en moyenne)</span>` : ''}
+     <ul>${(m.notes || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`).join('') || 'Rien encore : les méthodes se remplissent à chaque candidature.';
+}
+const LISTS = ['keywords', 'linkedin_searches', 'smartrecruiters_companies'];
+async function loadSettings() {
+  S = await api('/api/settings');
+  for (const [k, v] of Object.entries(S)) {
+    const el = $('#s_' + k); if (!el) continue;
+    if (el.type === 'checkbox') el.checked = !!v;
+    else if (LISTS.includes(k)) el.value = (v || []).join('\n');
+    else if (k === 'schedule') el.value = (v || []).join(', ');
+    else if (k === 'custom_answers') el.value = JSON.stringify(v || {}, null, 1);
+    else el.value = v ?? '';
+  }
+  $('#sitesen').innerHTML = '<h2 style="margin-top:12px">Sites actifs</h2>' + Object.entries(S.sites_enabled || {}).map(([k, v]) =>
+    `<label class="f"><span><input type="checkbox" data-site="${k}" ${v ? 'checked' : ''}> ${esc(SITES[k] || k)}</span></label>`).join('');
+  $('#credsite').innerHTML = Object.entries(SITES).map(([k, n]) => `<option value="${k}">${esc(n)}</option>`).join('') + '<option value="gmail">Gmail</option>';
+  const d = await api('/api/state');
+  $('#credlist').innerHTML = Object.entries(d.creds).filter(([, v]) => v).map(([k]) => `<span class="pill">${esc(SITES[k] || k)} ✓</span> `).join('');
+}
+async function saveSettings() {
+  const b = {};
+  for (const k of Object.keys(S)) {
+    const el = $('#s_' + k); if (!el) continue;
+    if (el.type === 'checkbox') b[k] = el.checked;
+    else if (LISTS.includes(k)) b[k] = el.value.split('\n').map(x => x.trim()).filter(x => x);
+    else if (k === 'schedule') b[k] = el.value.split(',').map(x => x.trim()).filter(x => /^\d\d:\d\d$/.test(x));
+    else if (k === 'custom_answers') { try { b[k] = JSON.parse(el.value || '{}'); } catch (e) { alert('JSON des réponses invalide'); return; } }
+    else if (el.type === 'number') b[k] = Number(el.value);
+    else b[k] = el.value;
+  }
+  b.sites_enabled = Object.fromEntries([...document.querySelectorAll('[data-site]')].map(c => [c.dataset.site, c.checked]));
+  await api('/api/settings', 'POST', b); loadSettings();
+}
+async function saveKey() { const r = await api('/api/apikey', 'POST', {key: $('#apikey').value}); $('#apikey').value = ''; alert(r && r.ok ? 'Clé enregistrée' : 'Clé supprimée'); }
+async function saveCred() {
+  await api('/api/cred', 'POST', {site: $('#credsite').value, user: $('#creduser').value, password: $('#credpwd').value});
+  $('#creduser').value = $('#credpwd').value = ''; loadSettings();
+}
+async function importProton() {
+  const f = $('#proton').files[0]; if (!f) return;
+  const fd = new FormData(); fd.append('file', f);
+  const r = await (await fetch('/api/import_proton', {method: 'POST', body: fd})).json();
+  alert(`Importés : ${Object.keys(r.imported || {}).join(', ') || 'aucun'} (${r.ignored || 0} autres identifiants ignorés)`); $('#proton').value = ''; loadSettings();
+}
+refresh(); loadOffers(); setInterval(refresh, 2500);
+</script>
+</body>
+</html>

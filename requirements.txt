@@ -1,0 +1,10 @@
+anthropic>=2.4
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+playwright>=1.44
+keyring>=25
+pypdf>=4
+pdfminer.six>=20231228
+pikepdf>=8
+pydantic>=2.6

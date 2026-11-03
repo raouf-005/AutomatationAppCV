@@ -1,0 +1,19 @@
+<!doctype html><html lang=fr><meta charset=utf-8><title>Test ATS</title>
+<div id=cookie><button onclick="this.parentElement.remove()">Tout refuser</button><button>Accepter</button></div>
+<form id=f onsubmit="event.preventDefault(); document.body.innerHTML='<h1>Merci pour votre candidature</h1>'">
+<label>Civilité <select name=civ required><option value="">Choisir</option><option>Madame</option><option>Monsieur</option></select></label>
+<label for=fn>Prénom *</label><input id=fn name=firstname required>
+<label for=ln>Nom *</label><input id=ln name=lastname required>
+<label>E-mail <input type=email name=email required></label>
+<label>Téléphone <input type=tel name=phone></label>
+<label>Ville de résidence <input name=city></label>
+<fieldset><legend>Avez-vous besoin d'un aménagement de poste ?</legend>
+ <label><input type=radio name=am value=o> Oui</label><label><input type=radio name=am value=n> Non</label></fieldset>
+<label>CV (PDF) <input type=file name=cv accept=".pdf" required></label>
+<label>Lettre de motivation (fichier) <input type=file name=lm></label>
+<label>Message au recruteur <textarea name=msg></textarea></label>
+<label><input type=checkbox name=nl> Recevoir la newsletter</label>
+<label><input type=checkbox name=rgpd required> J'accepte la politique de confidentialité</label>
+<div role=dialog style="display:none">caché</div>
+<button type=submit>Envoyer ma candidature</button>
+</form></html>

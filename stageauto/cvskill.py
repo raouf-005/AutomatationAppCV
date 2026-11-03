@@ -1,0 +1,246 @@
+"""CV + lettre avec le skill « candidature-stage-ciblee » d'Abderraouf (gabarit v16).
+
+Un seul appel Claude par offre : éligibilité + CV .tex + lettre .tex + mots-clés ATS, en suivant SKILL.md et profil.md.
+Puis build.py du skill (compilation, 1 page, ATS multi-moteurs, contenu actif) ; une correction groupée si erreurs.
+Sans poppler/qpdf (Windows sans ces outils), contrôle allégé : compilation, 1 page, règles du skill, neutralisation pypdf.
+Repli : générateur à modèles (gen/generator.py) si le skill échoue.
+"""
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import anthropic
+
+from . import llm
+from .config import IS_WIN, SKILL_DIR, WORK, load_settings
+from .gen import generator
+from .notify import log
+
+SKILL = SKILL_DIR
+
+SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["eligible", "reason", "lang", "company", "poste", "dossier", "cv_tex", "lettre_tex", "kw", "kw_opt",
+                 "message_court", "ville", "recruteur"],
+    "properties": {
+        "eligible": {"type": "boolean", "description": "stage 6 mois / fin d'études dès 2027 dans le domaine, exigences remplies"},
+        "reason": {"type": "string"},
+        "lang": {"type": "string", "enum": ["fr", "en"]},
+        "company": {"type": "string"},
+        "poste": {"type": "string", "description": "intitulé court sans F/H ni référence"},
+        "dossier": {"type": "string", "description": "<Entreprise>_<Sujet> (lettres, chiffres, _)"},
+        "cv_tex": {"type": "string", "description": "CV LaTeX complet (vide si non éligible)"},
+        "lettre_tex": {"type": "string", "description": "lettre LaTeX complète (vide si non éligible)"},
+        "kw": {"type": "array", "items": {"type": "string"}, "description": "12 à 18 mots-clés bloquants écrits tels quels dans le CV"},
+        "kw_opt": {"type": "array", "items": {"type": "string"}},
+        "message_court": {"type": "string", "description": "message de candidature < 400 caractères, sans point-virgule"},
+        "ville": {"type": "string"},
+        "recruteur": {"type": "string", "description": "nom du recruteur ou manager s'il est cité, sinon vide"},
+    },
+}
+
+
+def _system():
+    skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+    profil = (SKILL / "references" / "profil.md").read_text(encoding="utf-8")
+    english = (SKILL / "references" / "english.md").read_text(encoding="utf-8")
+    return ("Tu appliques le skill ci-dessous pour produire le CV et la lettre d'Abderraouf pour UNE offre. Ignore les "
+            "instructions d'outils du skill (bash, SendUserFile) : rends directement les deux fichiers .tex complets, les "
+            "mots-clés (kw = kw.txt, kw_opt = kw-opt.txt) et un message court. Vérifie d'abord l'éligibilité : stage de "
+            "fin d'études ou de 6 mois à partir de 2027 en cybersécurité, SOC/CERT, GRC, pentest, systèmes et réseaux, "
+            "DevOps/DevSecOps, cloud/infra, automatisation, IA appliquée à la cyber ; non éligible si alternance, CDI, "
+            "moins de 6 mois, autre domaine, nationalité française/citoyenneté UE/habilitation exigée, ou exigence clé "
+            "absente du profil (outils interdits du skill compris). Si non éligible : cv_tex et lettre_tex vides.\n"
+            "Offre en anglais : CV et lettre en anglais selon references/english.md.\n\n"
+            f"===== SKILL.md =====\n{skill}\n\n===== references/profil.md =====\n{profil}\n\n"
+            f"===== references/english.md =====\n{english}")
+
+
+_SYS = None
+
+
+def _ask(messages):
+    global _SYS
+    _SYS = _SYS or _system()
+    s = load_settings()
+    kw = dict(model=s.get("model", "claude-opus-5-5"), max_tokens=32000,
+              system=[{"type": "text", "text": _SYS, "cache_control": {"type": "ephemeral"}}],
+              messages=messages, output_config={"effort": s.get("cv_effort", "medium"),
+                                                "format": {"type": "json_schema", "schema": SCHEMA}},
+              betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+    try:
+        with llm.client().beta.messages.stream(**kw) as st:
+            m = st.get_final_message()
+    except anthropic.BadRequestError as e:
+        if "fallback" not in str(e).lower():
+            raise
+        kw.pop("betas")
+        kw.pop("fallbacks")
+        with llm.client().messages.stream(**kw) as st:
+            m = st.get_final_message()
+    if m.stop_reason == "refusal":
+        return m, None
+    txt = "".join(b.text for b in m.content if b.type == "text")
+    try:
+        return m, json.loads(txt)
+    except json.JSONDecodeError:
+        return m, None
+
+
+def _tools_ok():
+    return all(shutil.which(t) for t in ("pdftotext", "pdfinfo", "pdffonts", "qpdf"))
+
+
+def _build_full(w: Path, out: Path) -> tuple[bool, str]:
+    env = generator._env()
+    r = subprocess.run([sys.executable, str(SKILL / "scripts" / "build.py"), str(w), "--kw", "kw.txt", "--kw-opt", "kw-opt.txt",
+                        "--out", str(out)], cwd=w, env=env, capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=240, creationflags=0x08000000 if IS_WIN else 0)
+    log_txt = r.stdout + r.stderr
+    errs = [l.strip() for l in log_txt.splitlines() if "ERREUR" in l or l.startswith("✗")]
+    return r.returncode == 0, "\n".join(errs)[:3000] or log_txt[-1500:]
+
+
+def _skill_module():
+    spec = importlib.util.spec_from_file_location("skill_build", SKILL / "scripts" / "build.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _docs(d: Path):
+    return [p for p in d.glob("*.pdf") if p.name.startswith(("CV_", "Lettre_", "Cover_Letter_"))]
+
+
+def _build_lite(w: Path, out: Path, kws: list) -> tuple[bool, str]:
+    """Sans poppler/qpdf : compilation (2 passes), 1 page, règles du skill, mots-clés lus par pypdf, neutralisation."""
+    errs = []
+    mod = _skill_module()
+    for f in sorted(w.glob("*.tex")):
+        for _ in range(2):
+            ok, err = generator.compile_tex(f)
+            if not ok:
+                break
+        if not ok:
+            errs.append(f"{f.name} : {err}")
+            continue
+        pdf = f.with_suffix(".pdf")
+        if generator.pages(pdf) != 1:
+            errs.append(f"{f.name} : {generator.pages(pdf)} pages (1 attendue)")
+        errs += [f"{f.name} : {e}" for e in mod.check_regles(str(f))]
+        if f.name.startswith("CV_"):
+            e2, _n = mod.check_entries(str(f))
+            errs += e2
+            miss = generator.ats_missing(pdf, kws)
+            if miss:
+                errs.append(f"mots-clés non lus dans le PDF : {miss}")
+        generator.neutralise(pdf)
+    if not errs:
+        out.mkdir(parents=True, exist_ok=True)
+        for p in _docs(w):
+            shutil.copy(p, out)
+    return not errs, "\n".join(errs)
+
+
+def _write(w: Path, d: dict):
+    if w.exists():
+        shutil.rmtree(w, ignore_errors=True)
+    w.mkdir(parents=True, exist_ok=True)
+    for f in (SKILL / "assets").iterdir():
+        if f.is_file():
+            shutil.copy(f, w)
+    for f in (SKILL / "assets" / "icons").glob("*.pdf"):
+        shutil.copy(f, w)
+    ent = re.sub(r"[^\w]+", "_", d["company"]).strip("_")[:30] or "Entreprise"
+    en = d.get("lang") == "en"
+    (w / f"CV_Abderraouf_Derardja_{ent}.tex").write_text(d["cv_tex"], encoding="utf-8")
+    (w / (f"Cover_Letter_Abderraouf_Derardja_{ent}.tex" if en else f"Lettre_Abderraouf_Derardja_{ent}.tex")).write_text(
+        d["lettre_tex"], encoding="utf-8")
+    (w / "kw.txt").write_text("\n".join(d.get("kw", [])) + "\n", encoding="utf-8")
+    (w / "kw-opt.txt").write_text("\n".join(d.get("kw_opt", [])) + "\n", encoding="utf-8")
+
+
+def generate(offer: dict) -> dict:
+    """Renvoie {ok, eligible, reason, cv, lm, lettre_txt, message_court, poste, dossier, lang, warnings}."""
+    user = (f"OFFRE (source : {offer.get('site')}, URL : {offer.get('url')})\nEntreprise : {offer.get('company')}\n"
+            f"Intitulé : {offer.get('title')}\nLieu : {offer.get('location')}\n\n{(offer.get('description') or '')[:14000]}")
+    messages = [{"role": "user", "content": user}]
+    try:
+        m, d = _ask(messages)
+    except anthropic.AuthenticationError:
+        raise
+    except Exception as e:
+        log(f"skill CV : {e.__class__.__name__} {str(e)[:120]}")
+        return _fallback(offer, f"skill indisponible ({e.__class__.__name__})")
+    if d is None:
+        return {"ok": False, "eligible": False, "reason": "réponse illisible ou déclinée"}
+    if not d["eligible"]:
+        return {"ok": False, "eligible": False, "reason": d.get("reason", "non éligible"), "poste": d.get("poste")}
+    dossier = re.sub(r"[^\w]+", "_", d.get("dossier") or d["company"]).strip("_")[:60]
+    w = WORK / dossier
+    out = w / "out"
+    full = _tools_ok()
+    warnings = []
+    for attempt in range(2):
+        _write(w, d)
+        ok, errs = _build_full(w, out) if full else _build_lite(w, out, d.get("kw", []))
+        if ok:
+            break
+        log(f"build {dossier} : erreurs ({'tentative ' + str(attempt + 1)})")
+        if attempt == 0:
+            messages += [{"role": "assistant", "content": m.content},
+                         {"role": "user", "content": "build.py signale ces erreurs. Corrige-les en une fois et renvoie "
+                                                     f"l'objet complet (mêmes champs) :\n{errs}"}]
+            try:
+                m, d2 = _ask(messages)
+            except Exception as e:
+                log(f"correction : {e.__class__.__name__}")
+                d2 = None
+            if not d2 or not d2.get("cv_tex"):
+                break
+            d = d2
+    pdfs = _docs(out) if out.exists() else []
+    if len(pdfs) < 2:
+        # dernier recours : PDF compilés mais contrôles non parfaits, s'ils tiennent sur 1 page
+        cand = _docs(w)
+        if len(cand) >= 2 and all(generator.pages(p) == 1 for p in cand):
+            out.mkdir(parents=True, exist_ok=True)
+            for p in cand:
+                generator.neutralise(p)
+                shutil.copy(p, out)
+            pdfs = _docs(out)
+            warnings.append("contrôles ATS non parfaits : " + errs[:300])
+        else:
+            return _fallback(offer, "build du skill en échec : " + errs[:200])
+    cv = next(p for p in pdfs if p.name.startswith("CV_"))
+    lm = next(p for p in pdfs if not p.name.startswith("CV_"))
+    lettre_tex = next(iter(w.glob("Lettre_*.tex")), None) or next(iter(w.glob("Cover_Letter_*.tex")), None)
+    lettre_txt = generator.plain(lettre_tex.read_text(encoding="utf-8")) if lettre_tex else ""
+    (out / "lettre.txt").write_text(lettre_txt, encoding="utf-8")
+    return {"ok": True, "eligible": True, "cv": str(cv), "lm": str(lm), "lettre_txt": lettre_txt,
+            "message_court": d.get("message_court", "")[:400], "poste": d.get("poste") or offer.get("title"),
+            "dossier": dossier, "lang": d.get("lang", "fr"), "company": d.get("company") or offer.get("company"),
+            "ville": d.get("ville"), "recruteur": d.get("recruteur"), "warnings": warnings, "folder": str(out)}
+
+
+def _fallback(offer, why):
+    log(f"repli modèles : {why}")
+    t = llm.tailor(offer)
+    if t is None:
+        return {"ok": False, "eligible": False, "reason": why}
+    if not t.eligible:
+        return {"ok": False, "eligible": False, "reason": t.reason}
+    o = t.model_dump()
+    dossier = generator.slug(t.e) + "_" + generator.slug(t.s)
+    r = generator.generate(o, WORK / dossier / "out", english_rules=(SKILL / "references" / "english.md").read_text(encoding="utf-8"),
+                           translate=llm.translate_tex)
+    if not r.get("ok"):
+        return {"ok": False, "eligible": True, "reason": r.get("error", "génération impossible")}
+    r.update({"eligible": True, "message_court": t.message_court, "poste": t.poste, "dossier": dossier, "lang": t.lang,
+              "company": t.e, "ville": t.ville, "recruteur": t.recruteur, "warnings": r.get("warnings", []) + [why]})
+    return r
