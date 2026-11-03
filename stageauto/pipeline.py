@@ -1,13 +1,22 @@
-"""Un passage complet : connexions -> offres du jour -> CV/lettres en lot -> candidatures -> contacts LinkedIn ->
-suivi des acceptations -> Gmail -> nouvel essai des sites reconnectés -> récapitulatif."""
+"""Orchestration des passages.
+
+- Passage complet (11h, 19h) : connexions, offres, candidatures, contacts LinkedIn, suivi des acceptations, Gmail,
+  nouvel essai des sites reconnectés.
+- Veille (toutes les ~30 min de 8h à 22h) : uniquement les nouvelles offres, pour postuler parmi les premiers.
+
+Flux continu : les offres sont triées par priorité (récence, « soyez parmi les premiers candidats »…), lues, pré-triées
+sans IA, puis chaque CV est généré et la candidature part DÈS QUE son CV est prêt, sans attendre les autres.
+Deux voies en parallèle, chacune dans sa fenêtre Chrome : LinkedIn (souris humaine) et les autres sites.
+"""
 import asyncio
 import datetime as dt
+import itertools
 import json
 import re
 import shutil
 from pathlib import Path
 
-from . import cdp, cvskill, db, gmail, linkedin_contacts, replay, vault
+from . import cdp, cvskill, db, gmail, linkedin_contacts, priority, replay, vault
 from .agent import Agent
 from .config import CANDIDATURES, DOMAIN_NEG, DOMAIN_POS, WORK, load_settings
 from .forms import nrm
@@ -15,7 +24,9 @@ from .notify import log, push
 from .sites import SITES
 
 STATE = {"running": False, "phase": "en attente", "detail": "", "started": None, "ended": None, "connections": {},
-         "needs_login": [], "review": {}, "summary": None, "stop": False}
+         "connections_ts": None, "needs_login": [], "review": {}, "summary": None, "stop": False, "mode": "",
+         "lanes": {}, "next_check": None, "linkedin_last_search": None}
+LANE_WINDOW = {"linkedin": 1, "web": 2, "all": 1}
 
 
 def phase(p, d=""):
@@ -23,15 +34,16 @@ def phase(p, d=""):
     log(f"— {p} {d}")
 
 
-def since_hours() -> int:
+def window_hours(quick: bool) -> float:
+    """Fenêtre de recherche : depuis la fin du passage précédent (avec un recouvrement de 15 min)."""
     r = db.q("SELECT ended FROM runs WHERE ended IS NOT NULL ORDER BY id DESC LIMIT 1")
     if r:
         try:
-            h = (dt.datetime.now() - dt.datetime.fromisoformat(r[0]["ended"])).total_seconds() / 3600
-            return int(min(48, max(2, h + 1)))
+            h = (dt.datetime.now() - dt.datetime.fromisoformat(r[0]["ended"])).total_seconds() / 3600 + 0.25
+            return min(48.0, max(1.0 if quick else 2.0, h))
         except ValueError:
             pass
-    return 24
+    return 24.0
 
 
 def in_domain(o) -> bool:
@@ -53,7 +65,7 @@ async def check_connections(browser, ids):
         home = site.base + "/fr/job-offers" if sid == "jobteaser" else site.home
         tab = await browser.new_tab(home)
         try:
-            await asyncio.sleep(1.5)
+            await tab.settle(5)
             ok = await site.logged_in(tab)
             if not ok and vault.get_cred(sid):
                 await tab.goto(site.login_url or home)
@@ -69,7 +81,7 @@ async def check_connections(browser, ids):
             res[sid] = False
         finally:
             await tab.close()
-    sem = asyncio.Semaphore(s.get("parallel_tabs", 4))
+    sem = asyncio.Semaphore(s.get("parallel_tabs", 3))
 
     async def guarded(sid):
         async with sem:
@@ -78,14 +90,36 @@ async def check_connections(browser, ids):
     return res
 
 
-async def gather_offers(browser, ids, hours):
-    sem = asyncio.Semaphore(load_settings().get("parallel_tabs", 4))
+async def connections(browser, ids, quick):
+    """En veille, réutilise l'état des connexions vérifié il y a moins de 90 min (gain de temps)."""
+    ts = STATE.get("connections_ts")
+    if quick and ts and (dt.datetime.now() - ts).total_seconds() < 5400 and all(i in STATE["connections"] for i in ids):
+        return {i: STATE["connections"][i] for i in ids}
+    conn = await check_connections(browser, ids)
+    STATE["connections"].update(conn)
+    STATE["connections_ts"] = dt.datetime.now()
+    return conn
+
+
+def linkedin_due() -> bool:
+    last = STATE.get("linkedin_last_search")
+    gap = load_settings().get("linkedin_watch_min", 60)
+    return last is None or (dt.datetime.now() - last).total_seconds() >= gap * 60
+
+
+async def gather_offers(browser, ids, hours, quick=False):
+    sem = asyncio.Semaphore(load_settings().get("parallel_tabs", 3))
     found = []
 
     async def one(sid):
         async with sem:
             try:
-                lst = await SITES[sid].search(browser, hours)
+                try:
+                    lst = await SITES[sid].search(browser, hours, quick=quick)
+                except TypeError:  # site ajouté sans le mode veille
+                    lst = await SITES[sid].search(browser, hours)
+                if sid == "linkedin":
+                    STATE["linkedin_last_search"] = dt.datetime.now()
                 log(f"{SITES[sid].name} : {len(lst)} offres listées")
                 found.extend(lst)
             except Exception as e:
@@ -116,60 +150,21 @@ def select_new(offers):
         if per_company.get(c, 0) + db.applied_today_for(o.get("company", "")) >= s["max_per_company_per_day"]:
             continue
         per_company[c] = per_company.get(c, 0) + 1
+        priority.score(o)
         keep.append(o)
+    keep.sort(key=lambda o: -o["score"])
     return keep[: s.get("max_applications_per_pass", 40) * 2]
 
 
-async def read_details(browser, offers):
-    sem = asyncio.Semaphore(load_settings().get("parallel_tabs", 4))
-
-    async def one(o):
-        async with sem:
-            tab = await browser.new_tab()
-            try:
-                await SITES[o["site"]].details(tab, o)
-            except Exception as e:
-                log(f"détail {o['key']} : {e.__class__.__name__}")
-            finally:
-                await tab.close()
-    await asyncio.gather(*(one(o) for o in offers))
+def pending_ready():
+    """CV déjà prêts mais candidature pas encore envoyée (passage interrompu, plafond atteint) : repris en priorité."""
+    since = (dt.date.today() - dt.timedelta(days=2)).isoformat()
     out = []
-    for o in offers:
-        if o.get("already"):
-            db.upsert_offer({**o, "status": "applied", "reason": "déjà postulé (page de l'offre)"})
-        elif not (o.get("description") or "").strip():
-            db.upsert_offer({**o, "status": "ignored", "reason": "descriptif illisible"})
-        else:
+    for r in db.q("SELECT * FROM offers WHERE status='docs_ready' AND found_at >= ?", (since,)):
+        o = {**r, **json.loads(r["data"] or "{}")}
+        if o.get("cv") and Path(o["cv"]).exists() and o.get("site") in SITES:
             out.append(o)
     return out
-
-
-async def generate_all(offers):
-    sem = asyncio.Semaphore(load_settings().get("parallel_llm", 4))
-    ready = []
-
-    async def one(o):
-        async with sem:
-            try:
-                r = await asyncio.to_thread(cvskill.generate, o)
-            except Exception as e:
-                log(f"CV {o['company']} : {e.__class__.__name__} {str(e)[:120]}")
-                db.upsert_offer({**o, "status": "error", "reason": f"génération : {e.__class__.__name__}"})
-                return
-            if not r.get("eligible"):
-                db.upsert_offer({**o, "status": "ignored", "reason": "non éligible : " + (r.get("reason") or "")[:200]})
-                return
-            if not r.get("ok"):
-                db.upsert_offer({**o, "status": "error", "reason": r.get("reason", "génération impossible")})
-                return
-            o.update({"cv": r["cv"], "lm": r["lm"], "lettre_txt": r["lettre_txt"], "message_court": r.get("message_court", ""),
-                      "poste": r.get("poste"), "dossier": r["dossier"], "lang": r.get("lang"), "gen_folder": r["folder"]})
-            if r.get("company"):
-                o["company_clean"] = r["company"]
-            db.upsert_offer({**o, "status": "docs_ready", "reason": "; ".join(r.get("warnings", []))[:300]})
-            ready.append(o)
-    await asyncio.gather(*(one(o) for o in offers))
-    return ready
 
 
 def files_for(o):
@@ -188,10 +183,10 @@ def recipe_key(o, url: str) -> str:
     return f"{o['site']}|{host}" + ("|easy" if o.get("easy") else "")
 
 
-async def apply_one(browser, o):
+async def apply_one(browser, o, lane=1):
     """Méthode mémorisée d'abord (sans IA) ; l'agent prend la suite au premier imprévu ou s'il n'y a pas de méthode."""
     site = SITES[o["site"]]
-    tab = await browser.new_tab()
+    tab = await browser.new_tab(lane=lane)
     keep_open = False
     s = load_settings()
     auto = s.get("auto_submit", True)
@@ -254,74 +249,212 @@ def archive(o):
     return str(d)
 
 
-async def apply_all(browser, offers, summary):
+async def stream(browser, offers, summary, resume=()):
+    """Lecture -> pré-tri -> CV -> candidature, offre par offre, dans l'ordre de priorité, avec deux voies d'envoi."""
     s = load_settings()
-    for o in offers[: s.get("max_applications_per_pass", 40)]:
+    lanes = {"linkedin": asyncio.PriorityQueue(), "web": asyncio.PriorityQueue()} if s.get("parallel_lanes", True) \
+        else {"all": asyncio.PriorityQueue()}
+
+    def lane_of(o):
+        return ("linkedin" if o["site"] == "linkedin" else "web") if len(lanes) > 1 else "all"
+    seq = itertools.count()
+    budget = {"left": s.get("max_applications_per_pass", 40)}
+    det_sem = asyncio.Semaphore(s.get("parallel_tabs", 3))
+    llm_sem = asyncio.Semaphore(s.get("parallel_llm", 4))
+
+    async def enqueue(o):
+        priority.score(o)
+        await lanes[lane_of(o)].put((-o["score"], next(seq), o))
+
+    for o in resume:
+        await enqueue(o)
+
+    async def prepare(o):
         if STATE["stop"]:
-            break
-        if db.applied_today_for(o["company"]) >= s["max_per_company_per_day"]:
-            db.set_status(o["key"], "ignored", "plafond 3 offres/entreprise/jour")
-            continue
-        phase("candidatures", f"{o['company']} — {o['title'][:60]}")
+            return
+        async with det_sem:
+            tab = await browser.new_tab()
+            try:
+                await SITES[o["site"]].details(tab, o)
+            except Exception as e:
+                log(f"détail {o['key']} : {e.__class__.__name__}")
+            finally:
+                await tab.close()
+        if o.get("already"):
+            db.upsert_offer({**o, "status": "applied", "reason": "déjà postulé (page de l'offre)"})
+            return
+        if not (o.get("description") or "").strip():
+            db.upsert_offer({**o, "status": "ignored", "reason": "descriptif illisible"})
+            return
+        if s.get("prescreen", True):
+            why = priority.prescreen(o)
+            if why:
+                db.upsert_offer({**o, "status": "ignored", "reason": "pré-tri : " + why})
+                summary["prescreened"] += 1
+                return
+        priority.score(o)
+        async with llm_sem:
+            if STATE["stop"]:
+                return
+            try:
+                r = await asyncio.to_thread(cvskill.generate, o)
+            except Exception as e:
+                log(f"CV {o['company']} : {e.__class__.__name__} {str(e)[:120]}")
+                db.upsert_offer({**o, "status": "error", "reason": f"génération : {e.__class__.__name__}"})
+                return
+        if not r.get("eligible"):
+            db.upsert_offer({**o, "status": "ignored", "reason": "non éligible : " + (r.get("reason") or "")[:200]})
+            return
+        if not r.get("ok"):
+            db.upsert_offer({**o, "status": "error", "reason": r.get("reason", "génération impossible")})
+            return
+        o.update({"cv": r["cv"], "lm": r["lm"], "lettre_txt": r["lettre_txt"], "message_court": r.get("message_court", ""),
+                  "poste": r.get("poste"), "dossier": r["dossier"], "lang": r.get("lang"), "gen_folder": r["folder"],
+                  "docs_at": db.now()})
+        db.upsert_offer({**o, "status": "docs_ready", "reason": "; ".join(r.get("warnings", []))[:300]})
+        await enqueue(o)  # la candidature part tout de suite si la voie est libre
+
+    async def lane_worker(name):
+        q = lanes[name]
+        while True:
+            _, _, o = await q.get()
+            if o is None:
+                STATE["lanes"].pop(name, None)
+                return
+            if STATE["stop"] or budget["left"] <= 0:
+                continue  # reste « docs_ready » : repris au passage suivant
+            budget["left"] -= 1
+            STATE["lanes"][name] = f"{o['company']} — {o['title'][:50]}"
+            try:
+                await apply_and_record(browser, o, summary, LANE_WINDOW[name])
+            except Exception as e:  # une erreur sur une offre n'arrête pas la voie
+                log(f"voie {name} : {o['company']} : {e.__class__.__name__} {str(e)[:120]}", "error")
+
+    workers = [asyncio.create_task(lane_worker(n)) for n in lanes]
+    for o, r in zip(offers, await asyncio.gather(*(prepare(o) for o in offers), return_exceptions=True)):
+        if isinstance(r, Exception):
+            log(f"préparation {o.get('company')} : {r.__class__.__name__} {str(r)[:120]}", "error")
+    for q in lanes.values():
+        await q.put((float("inf"), next(seq), None))
+    await asyncio.gather(*workers, return_exceptions=True)
+
+
+async def apply_and_record(browser, o, summary, lane=1):
+    s = load_settings()
+    if db.applied_today_for(o["company"]) >= s["max_per_company_per_day"]:
+        db.set_status(o["key"], "ignored", "plafond d'offres par entreprise et par jour")
+        return
+    phase("candidatures", f"{o['company']} — {o['title'][:60]}")
+    try:
+        res = await apply_one(browser, o, lane)
+    except Exception as e:
+        res = {"status": "error", "reason": f"{e.__class__.__name__} {str(e)[:150]}"}
+    st = res["status"]
+    if st == "applied":
+        folder = archive(o)
+        db.set_status(o["key"], "applied", res.get("reason", ""), folder=folder, duration=res.get("seconds"))
+        db.set_data(o["key"], verified="page", age_min=o.get("age_min"), score=o.get("score"))
+        o["folder"] = folder
+        summary["applied"].append(o)
+        delay = ""
         try:
-            res = await apply_one(browser, o)
-        except Exception as e:
-            res = {"status": "error", "reason": f"{e.__class__.__name__} {str(e)[:150]}"}
-        st = res["status"]
-        if st == "applied":
-            folder = archive(o)
-            db.set_status(o["key"], "applied", res.get("reason", ""), folder=folder, duration=res.get("seconds"))
-            o["folder"] = folder
-            summary["applied"].append(o)
-        elif st == "ready":
-            db.set_status(o["key"], "ready", "rempli, en attente de validation")
-            summary["ready"].append(o)
-        elif st == "already_applied":
-            db.set_status(o["key"], "applied", "déjà postulé")
-        elif st == "needs_login":
-            db.set_status(o["key"], "blocked_login", res.get("reason", ""))
-            if o["site"] not in STATE["needs_login"]:
-                STATE["needs_login"].append(o["site"])
-            summary["login"].append(o)
-        else:
-            db.set_status(o["key"], "ignored" if st in ("blocked", "not_eligible") else "error", res.get("reason", st))
+            delay = f" ({round((dt.datetime.now() - dt.datetime.fromisoformat(o.get('found_at') or db.now())).total_seconds() / 60)} min après détection)"
+        except ValueError:
+            pass
+        log(f"✓ candidature envoyée : {o['company']} — {o['title'][:60]}{delay}")
+    elif st == "ready":
+        db.set_status(o["key"], "ready", "rempli, en attente de validation")
+        summary["ready"].append(o)
+    elif st == "already_applied":
+        db.set_status(o["key"], "applied", "déjà postulé")
+    elif st == "needs_login":
+        db.set_status(o["key"], "blocked_login", res.get("reason", ""))
+        if o["site"] not in STATE["needs_login"]:
+            STATE["needs_login"].append(o["site"])
+        summary["login"].append(o)
+    else:
+        db.set_status(o["key"], "ignored" if st in ("blocked", "not_eligible") else "error", res.get("reason", st))
 
 
-async def run_pass(trigger="manuel"):
+APPLIED_MARK = re.compile(r"Candidature envoyée|Vous avez postulé|Postulé il y a|Applied \d|Application submitted|"
+                          r"Votre candidature a été envoyée", re.I)
+
+
+async def verify_applications(browser, applied):
+    """Contrôle après envoi : LinkedIn affiche-t-il « Candidature envoyée » sur l'offre ?"""
+    for o in [x for x in applied if x["site"] == "linkedin"]:
+        tab = await browser.new_tab(o["url"])
+        try:
+            ok = await tab.wait_for("() => /Candidature envoyée|Vous avez postulé|Postulé il y a|Applied \\d|Application submitted/i"
+                                    ".test((document.querySelector('main') || document.body).innerText.slice(0, 4000))", timeout=8)
+            db.set_data(o["key"], verified="linkedin" if ok else "à vérifier")
+            if not ok:
+                log(f"⚠ LinkedIn n'affiche pas « Candidature envoyée » pour {o['company']} : à vérifier")
+                o["warn"] = "non confirmé par LinkedIn"
+        except Exception:
+            pass
+        finally:
+            await tab.close()
+
+
+def match_acks(acks):
+    """Accusés de réception Gmail -> candidatures confirmées par e-mail."""
+    since = (dt.date.today() - dt.timedelta(days=3)).isoformat()
+    n = 0
+    for r in db.q("SELECT key, company, data FROM offers WHERE status='applied' AND applied_at >= ?", (since,)):
+        words = [w for w in nrm(r["company"]).split() if len(w) >= 3 and w not in ("group", "groupe", "france", "sas")]
+        if words and any(words[0] in nrm(a) for a in acks):
+            if json.loads(r["data"] or "{}").get("verified") != "email":
+                db.set_data(r["key"], verified="email")
+                n += 1
+    return n
+
+
+async def run_pass(trigger="manuel", mode="full"):
     if STATE["running"]:
         return
-    STATE.update(running=True, stop=False, started=db.now(), ended=None, needs_login=[], summary=None)
+    quick = mode == "quick"
+    STATE.update(running=True, stop=False, started=db.now(), ended=None, summary=None, mode=mode, lanes={})
+    if not quick:
+        STATE["last_full_started"] = dt.datetime.now()
+    if not quick:
+        STATE["needs_login"] = []
     run_id = db.x("INSERT INTO runs(started) VALUES(?)", (db.now(),)).lastrowid
-    summary = {"applied": [], "ready": [], "login": [], "contacts": [], "followups": [], "gmail": {}, "missing": []}
+    summary = {"applied": [], "ready": [], "login": [], "contacts": [], "followups": [], "gmail": {}, "missing": [],
+               "prescreened": 0, "mode": mode}
     try:
         db.import_seed()
         s = load_settings()
-        phase("navigateur", "connexion à Chrome")
+        phase("navigateur", "veille rapide" if quick else "passage complet")
         browser = await cdp.get_browser()
         enabled = [k for k, v in s.get("sites_enabled", {}).items() if v and k in SITES]
+        if quick and s.get("watch_sites"):
+            enabled = [k for k in enabled if k in s["watch_sites"]]
         if "linkedin" in enabled and browser.kind != "extension" and s.get("linkedin_real_chrome_only", True):
             enabled.remove("linkedin")
-            push("LinkedIn ignoré", "LinkedIn passe uniquement par ton vrai Chrome : charge l'extension StageAuto Bridge et "
-                                   "garde Chrome ouvert.")
+            if not quick:
+                push("LinkedIn ignoré", "LinkedIn passe uniquement par ton vrai Chrome : charge l'extension StageAuto Bridge et "
+                                       "garde Chrome ouvert.")
         phase("connexions", ", ".join(enabled))
-        conn = await check_connections(browser, enabled)
-        STATE["connections"] = conn
+        conn = await connections(browser, enabled, quick)
         missing = [SITES[k].name for k, ok in conn.items() if not ok]
         summary["missing"] = missing
-        if missing:
+        if missing and not quick:
             push("Connecte-toi à : " + ", ".join(missing),
                  "Dans Chrome (ou bouton « Se connecter » du tableau de bord) – je postule dès que c'est fait.")
-        hours = since_hours()
+        hours = window_hours(quick)
         ok_ids = [k for k, ok in conn.items() if ok]
-        phase("recherche", f"offres des {hours} dernières heures")
-        offers = select_new(await gather_offers(browser, ok_ids, hours))
-        phase("lecture des offres", f"{len(offers)} nouvelles")
-        offers = await read_details(browser, offers)
-        phase("CV et lettres", f"{len(offers)} offres (skill candidature-stage-ciblee)")
-        ready = await generate_all(offers)
-        phase("candidatures", f"{len(ready)} prêtes")
-        await apply_all(browser, ready, summary)
-        if conn.get("linkedin"):
+        if quick and "linkedin" in ok_ids and not linkedin_due():
+            ok_ids.remove("linkedin")  # LinkedIn : une recherche par heure au plus en veille
+        phase("recherche", f"offres des {hours:.1f} dernières heures ({', '.join(ok_ids)})")
+        offers = select_new(await gather_offers(browser, ok_ids, hours, quick))
+        resume = pending_ready()
+        phase("candidatures", f"{len(offers)} nouvelles offres, {len(resume)} CV prêts en attente")
+        await stream(browser, offers, summary, resume)
+        if summary["applied"]:
+            phase("vérification", "confirmation des candidatures")
+            await verify_applications(browser, summary["applied"])
+        if conn.get("linkedin") and summary["applied"]:
             for o in summary["applied"]:
                 if STATE["stop"]:
                     break
@@ -330,35 +463,43 @@ async def run_pass(trigger="manuel"):
                     summary["contacts"] += await linkedin_contacts.contact_for(browser, o, o.get("folder", ""))
                 except Exception as e:
                     log(f"contacts {o['company']} : {e.__class__.__name__}")
-            phase("suivi des acceptations")
-            try:
-                summary["followups"] = await linkedin_contacts.follow_ups(browser)
-            except Exception as e:
-                log(f"suivi : {e.__class__.__name__}")
-        phase("Gmail")
-        summary["gmail"] = await gmail.check(browser)
-        # sites reconnectés pendant le passage : on recommence pour eux
-        if missing and not STATE["stop"]:
-            phase("nouvel essai", "sites qui étaient déconnectés")
-            again = await check_connections(browser, [k for k, ok in conn.items() if not ok])
-            back = [k for k, ok in again.items() if ok]
-            if back:
+        if not quick:
+            if conn.get("linkedin"):
+                phase("suivi des acceptations")
+                try:
+                    summary["followups"] = await linkedin_contacts.follow_ups(browser)
+                except Exception as e:
+                    log(f"suivi : {e.__class__.__name__}")
+            phase("Gmail")
+            summary["gmail"] = await gmail.check(browser)
+            n = match_acks(summary["gmail"].get("acks") or [])
+            if n:
+                log(f"{n} candidature(s) confirmée(s) par un accusé de réception")
+            if missing and not STATE["stop"]:
+                phase("nouvel essai", "sites qui étaient déconnectés")
+                again = await check_connections(browser, [k for k, ok in conn.items() if not ok])
                 STATE["connections"].update(again)
-                more = await generate_all(await read_details(browser, select_new(await gather_offers(browser, back, hours))))
-                await apply_all(browser, more, summary)
-            summary["missing"] = [SITES[k].name for k, ok in again.items() if not ok]
-        await retry_blocked_login(browser, summary)
+                back = [k for k, ok in again.items() if ok]
+                if back:
+                    await stream(browser, select_new(await gather_offers(browser, back, hours)), summary)
+                summary["missing"] = [SITES[k].name for k, ok in again.items() if not ok]
+            await retry_blocked_login(browser, summary)
     except Exception as e:
         log(f"passage interrompu : {e.__class__.__name__} {e}", "error")
         push("StageAuto : passage interrompu", str(e)[:200])
     finally:
         STATE["running"] = False
         STATE["ended"] = db.now()
+        STATE["lanes"] = {}
         text = recap(summary)
         STATE["summary"] = text
-        db.x("UPDATE runs SET ended=?, summary=? WHERE id=?", (db.now(), text, run_id))
-        phase("terminé", "")
-        if summary["applied"] or summary["contacts"] or summary["followups"] or summary["missing"] or \
+        db.x("UPDATE runs SET ended=?, summary=? WHERE id=?", (db.now(), f"[{mode}] " + text, run_id))
+        priority.refresh_recipes()
+        phase("terminé", "veille" if quick else "")
+        if quick:
+            if summary["applied"] or summary["ready"]:
+                push("StageAuto : postulé parmi les premiers", text[:900])
+        elif summary["applied"] or summary["contacts"] or summary["followups"] or summary["missing"] or \
                 any(summary["gmail"].get(k) for k in ("actions", "replies", "confirmed")):
             push("StageAuto : récapitulatif", text[:900])
 
@@ -380,16 +521,19 @@ async def retry_blocked_login(browser, summary):
                 redo.append(o)
     if redo:
         phase("nouvel essai", f"{len(redo)} offres en attente de connexion")
-        await apply_all(browser, redo, summary)
+        await stream(browser, [], summary, resume=redo)
 
 
 def recap(s) -> str:
     L = []
     if s["applied"]:
         L.append("1) Candidatures envoyées :")
-        L += [f"- {o['company']} — {o.get('poste') or o['title']} — {o['url']}" for o in s["applied"]]
+        L += [f"- {o['company']} — {o.get('poste') or o['title']} — {o['url']}" + (f" ⚠ {o['warn']}" if o.get("warn") else "")
+              for o in s["applied"]]
     else:
         L.append("1) Aucune nouvelle candidature envoyée.")
+    if s.get("prescreened"):
+        L.append(f"{s['prescreened']} offre(s) écartée(s) par le pré-tri (alternance, durée, habilitation…).")
     if s["ready"]:
         L.append("À valider dans le tableau de bord : " + ", ".join(o["company"] for o in s["ready"]))
     if s["contacts"] or s["followups"]:

@@ -54,11 +54,11 @@ async def replay(browser, tab, rkey, files, offer, auto=True) -> dict | None:
                 continue
             before = set(await browser.tab_ids())
             await tab.click(it["ref"])
-            await asyncio.sleep(1.5)
-            nt = await browser.wait_new_tab(before, timeout=2.5, opener=tab.id)
+            await asyncio.sleep(0.25)
+            nt = await browser.wait_new_tab(before, timeout=1.0, opener=tab.id)
             if nt:
                 tab = nt
-            await tab.wait_ready(10)
+            await tab.settle(8)
             snap = await tab.snapshot()
     # 2. étapes
     last_errors = None
@@ -89,9 +89,12 @@ async def replay(browser, tab, rkey, files, offer, auto=True) -> dict | None:
         if final:
             if not auto:
                 return out("ready", "rempli, envoi en attente de validation")
+            probs = forms.presubmit_problems(await tab.snapshot(keep=True))
+            if probs:
+                return out("fallback", "vérification avant envoi : " + " ; ".join(probs[:3]))
             await tab.click(final["ref"])
-            for _ in range(20):
-                await asyncio.sleep(1.5)
+            for _ in range(40):
+                await asyncio.sleep(0.75)
                 s2 = await tab.snapshot()
                 if forms.looks_success(s2["url"], s2["text"]):
                     return out("applied", "confirmation vue")
@@ -102,7 +105,7 @@ async def replay(browser, tab, rkey, files, offer, auto=True) -> dict | None:
         if not nxt:
             return out("fallback", "aucun bouton connu sur cette étape")
         await tab.click(nxt["ref"])
-        await asyncio.sleep(1.3)
+        await tab.settle(6)
         s2 = await tab.snapshot()
         if s2.get("errors") and s2["errors"] == last_errors:
             return out("fallback", "étape refusée : " + "; ".join(s2["errors"][:2]))

@@ -22,11 +22,12 @@ ALERT = re.compile(r"alerte|alert|newsletter|offres? (du jour|similaires)|jobs? 
 
 async def check(browser):
     idx = load_settings().get("gmail_index", 0)
-    res = {"actions": [], "confirmed": [], "refus": [], "replies": [], "login": False}
+    res = {"actions": [], "confirmed": [], "refus": [], "replies": [], "acks": [], "login": False}
     base = f"https://mail.google.com/mail/u/{idx}/#search/newer_than%3A1d"
     tab = await browser.new_tab(base)
     try:
-        await asyncio.sleep(5)
+        await tab.wait_for("() => document.querySelectorAll('tr.zA').length || /accounts\\.google/.test(location.host)"
+                           " || /Aucun message|No messages/.test(document.body.innerText)", timeout=12)
         if "accounts.google.com" in (await tab.url()):
             res["login"] = True
             return res
@@ -38,12 +39,14 @@ async def check(browser):
                 if ok:
                     res["confirmed"].append(f"{who} : {r['subject'][:80]}")
                 await tab.goto(base)
-                await asyncio.sleep(4)
+                await tab.wait_for("() => document.querySelectorAll('tr.zA').length", timeout=10)
             elif ACTION.search(txt) and not ACK.search(txt):
                 res["actions"].append(f"{who} : {r['subject'][:90]}")
             elif REFUS.search(txt):
                 res["refus"].append(f"{who} : {r['subject'][:80]}")
-            elif not ACK.search(txt) and not ALERT.search(txt) and re.search(r"stage|internship|candidature|application|recrut", txt, re.I):
+            elif ACK.search(txt):  # accusé de réception : sert à confirmer qu'une candidature est bien arrivée
+                res["acks"].append(f"{who} {r['subject']} {r['snippet'][:120]}")
+            elif not ALERT.search(txt) and re.search(r"stage|internship|candidature|application|recrut", txt, re.I):
                 res["replies"].append(f"{who} : {r['subject'][:80]}")
     except Exception as e:
         log(f"Gmail : {e.__class__.__name__}")

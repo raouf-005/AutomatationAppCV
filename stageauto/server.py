@@ -2,6 +2,7 @@
 import asyncio
 import datetime as dt
 import json
+import random
 import tempfile
 from pathlib import Path
 
@@ -23,24 +24,48 @@ async def _startup():
     asyncio.create_task(scheduler())
 
 
+def _in_hours(spec: str, now: dt.datetime) -> bool:
+    try:
+        a, b = [x.strip() for x in (spec or "00:00-23:59").split("-")]
+        return a <= now.strftime("%H:%M") <= b
+    except ValueError:
+        return True
+
+
 async def scheduler():
-    """Lance un passage aux heures prévues (11:00 et 19:00 par défaut) tant que l'application est ouverte."""
+    """Passages complets aux heures prévues (11:00, 19:00) et veille rapide entre les deux, tant que l'application tourne."""
     done = set()
+    next_quick = dt.datetime.now() + dt.timedelta(minutes=2)
+    pending_full = False
     while True:
+        s = load_settings()
         now = dt.datetime.now()
-        for hm in load_settings().get("schedule", []):
+        for hm in s.get("schedule", []):
             tag = f"{now.date()} {hm}"
             if now.strftime("%H:%M") == hm and tag not in done:
                 done.add(tag)
-                start_run(f"planifié {hm}")
-        await asyncio.sleep(20)
+                pending_full = True
+        if not pipeline.STATE["running"]:
+            last_full = pipeline.STATE.get("last_full_started")
+            if pending_full and last_full and (now - last_full).total_seconds() < 1800:
+                pending_full = False  # déjà lancé par la tâche planifiée Windows : pas de doublon
+            if pending_full:
+                pending_full = False
+                start_run(f"planifié {now:%H:%M}", "full")
+                next_quick = now + dt.timedelta(minutes=s.get("watch_interval_min", 30))
+            elif s.get("watch_enabled", True) and _in_hours(s.get("watch_hours"), now) and now >= next_quick:
+                start_run("veille", "quick")
+                jitter = random.uniform(0.85, 1.15)
+                next_quick = now + dt.timedelta(minutes=s.get("watch_interval_min", 30) * jitter)
+        pipeline.STATE["next_check"] = next_quick.isoformat(timespec="minutes") if s.get("watch_enabled", True) else None
+        await asyncio.sleep(15)
 
 
-def start_run(trigger="manuel"):
+def start_run(trigger="manuel", mode="full"):
     global _task
     if pipeline.STATE["running"]:
         return False
-    _task = asyncio.create_task(pipeline.run_pass(trigger))
+    _task = asyncio.create_task(pipeline.run_pass(trigger, mode))
     return True
 
 
@@ -68,11 +93,21 @@ async def state():
     s = load_settings()
     today = db.today()
     counts = {r["status"]: r["n"] for r in db.q("SELECT status, COUNT(*) n FROM offers WHERE found_at LIKE ? GROUP BY status", (today + "%",))}
-    applied_today = db.q("SELECT key, site, company, title, url, folder, applied_at FROM offers WHERE status='applied' AND applied_at LIKE ? ORDER BY applied_at DESC", (today + "%",))
+    applied_today = db.q("SELECT key, site, company, title, url, folder, applied_at, found_at, data FROM offers WHERE status='applied' "
+                         "AND applied_at LIKE ? ORDER BY applied_at DESC", (today + "%",))
+    for r in applied_today:
+        d = json.loads(r.pop("data") or "{}")
+        r["verified"] = d.get("verified", "")
+        try:
+            r["delay_min"] = round((dt.datetime.fromisoformat(r["applied_at"]) - dt.datetime.fromisoformat(r["found_at"])).total_seconds() / 60)
+        except (TypeError, ValueError):
+            r["delay_min"] = None
     st = dict(pipeline.STATE)
     st.pop("stop", None)
     return {
         "state": st, "extension": bool(cdp.BRIDGE.ws), "backend": s.get("browser_backend"),
+        "watch": {"enabled": s.get("watch_enabled", True), "interval": s.get("watch_interval_min", 30),
+                  "hours": s.get("watch_hours")},
         "api_key": bool(vault.get_api_key()), "foreign_key": bool(vault.get_foreign_key()),
         "provider": s.get("llm_provider", "anthropic"), "counts": counts, "applied_today": applied_today,
         "invites_today": db.invites_today(), "inmails_today": db.inmails_today(),
@@ -84,8 +119,8 @@ async def state():
 
 
 @app.post("/api/run")
-async def run():
-    return {"started": start_run("manuel")}
+async def run(mode: str = "full"):
+    return {"started": start_run("manuel", "quick" if mode == "quick" else "full")}
 
 
 @app.post("/api/test_linkedin")
@@ -105,12 +140,16 @@ async def stop():
 @app.get("/api/offers")
 async def offers(status: str = "", days: int = 7):
     since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
-    sql = "SELECT key, site, company, title, url, status, reason, folder, found_at, applied_at FROM offers WHERE found_at >= ?"
+    sql = "SELECT key, site, company, title, url, status, reason, folder, found_at, applied_at, data FROM offers WHERE found_at >= ?"
     args = [since]
     if status:
         sql += " AND status=?"
         args.append(status)
-    return db.q(sql + " ORDER BY COALESCE(applied_at, found_at) DESC LIMIT 400", args)
+    rows = db.q(sql + " ORDER BY COALESCE(applied_at, found_at) DESC LIMIT 400", args)
+    for r in rows:
+        d = json.loads(r.pop("data") or "{}")
+        r["verified"], r["score"] = d.get("verified", ""), d.get("score")
+    return rows
 
 
 @app.get("/api/contacts")
@@ -151,7 +190,7 @@ async def set_foreign_key(req: Request):
 async def learning():
     recipes = {r["site"]: json.loads(r["data"]).get("recipe") for r in db.q("SELECT * FROM methods WHERE site LIKE '%|%'")}
     answers = db.q("SELECT question, answer, source, uses FROM answers ORDER BY uses DESC, rowid DESC LIMIT 200")
-    return {"curve": db.learning_curve(), "recipes": recipes, "answers": answers}
+    return {"curve": db.learning_curve(), "recipes": recipes, "answers": answers, "delays": db.delay_stats()}
 
 
 @app.post("/api/cred")

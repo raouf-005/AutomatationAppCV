@@ -144,6 +144,8 @@ def _write(w: Path, d: dict):
 
 def generate(offer: dict) -> dict:
     """Renvoie {ok, eligible, reason, cv, lm, lettre_txt, message_court, poste, dossier, lang, warnings}."""
+    if load_settings().get("cv_mode") == "rapide":  # modèles + adaptation courte : ~4 fois plus rapide que le skill complet
+        return _fallback(offer, "mode CV rapide")
     user = (f"OFFRE (source : {offer.get('site')}, URL : {offer.get('url')})\nEntreprise : {offer.get('company')}\n"
             f"Intitulé : {offer.get('title')}\nLieu : {offer.get('location')}\n\n{(offer.get('description') or '')[:14000]}")
     conv = _conversation()

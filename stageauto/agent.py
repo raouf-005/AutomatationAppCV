@@ -126,6 +126,8 @@ class Agent:
         self.trace: list = []
         self.recipe_key = None   # clé de mémoire du site (site|hôte) ; fixée par l'appelant pour les candidatures
         self.extra_intro = ""
+        self._warned = None
+        self.checked_before_submit = False
 
     # --------------------------------------------------------------------------- rendu d'une page
     @staticmethod
@@ -200,10 +202,18 @@ class Agent:
                                     " return {t: (e.innerText || e.value || e.getAttribute('aria-label') || '').trim(), form: !!f} }", a["ref"])
                 if it and it["form"] and FINAL_RE.match(it["t"]):
                     return "MODE VALIDATION : ne clique pas sur l'envoi final. Appelle finish(status='ready')."
+            if self.auto and item.get("role") == "button" and FINAL_RE.match(label):
+                # contrôle avant l'envoi, sans renuméroter les références
+                probs = forms.presubmit_problems(await tab.snapshot(keep=True))
+                if probs and probs != self._warned:
+                    self._warned = probs
+                    return ("VÉRIFICATION AVANT ENVOI — à corriger d'abord (auto_fill, puis les champs restants) : "
+                            + " ; ".join(probs) + ". Si tu es sûr que c'est une fausse alerte, reclique sur le bouton d'envoi.")
+                self.checked_before_submit = True
             before = set(await self.browser.tab_ids())
             await tab.click(a["ref"])
-            await asyncio.sleep(1.2)
-            newt = await self.browser.wait_new_tab(before, timeout=2.5, opener=tab.id)
+            await asyncio.sleep(0.25)
+            newt = await self.browser.wait_new_tab(before, timeout=1.0, opener=tab.id)
             if item.get("role") in ("button", "link") and label:
                 self.trace.append({"a": "click", "name": clean_name(label), "final": bool(FINAL_RE.match(label)),
                                    "new_tab": bool(newt)})
@@ -213,7 +223,7 @@ class Agent:
             if newt:
                 self.tab = newt
                 return "Nouvel onglet ouvert, tu es dessus maintenant.\n" + self._view(await newt.snapshot())
-            await tab.wait_ready(10)
+            await tab.settle(8)
             return "OK\n" + self._view(await tab.snapshot(), limit=6000)
         if name == "type":
             item = self.refs.get(a["ref"], {})

@@ -76,7 +76,15 @@ DEFAULT_SETTINGS = {
     "cv_effort": "medium",
     "agent_max_steps": 40,
     "gmail_index": 0,
-    "schedule": ["11:00", "19:00"],
+    "schedule": ["11:00", "19:00"],    # passages complets
+    "watch_enabled": True,            # veille : vérifier souvent les nouvelles offres pour postuler parmi les premiers
+    "watch_interval_min": 30,
+    "watch_hours": "08:00-22:00",
+    "linkedin_watch_min": 60,         # LinkedIn : une recherche par heure au plus en veille
+    "watch_sites": [],                # vide = tous les sites actifs
+    "parallel_lanes": True,           # LinkedIn et autres sites postulent en parallèle (2 fenêtres)
+    "prescreen": True,                # écarter sans IA les offres manifestement hors cible
+    "cv_mode": "skill",               # skill (qualité maximale) | rapide (modèles, ~4x plus rapide)
     "auto_submit": True,              # False = remplit tout puis attend la validation dans l'interface
     "max_per_company_per_day": 3,
     "max_applications_per_pass": 40,

@@ -18,7 +18,8 @@ Application Windows qui fait, deux fois par jour, la routine de candidature de s
    Décompresse ensuite **`StageAuto_personnel.zip`** (envoyé à part, jamais publié) à la racine : il crée le dossier
    `personal/`, qui contient ton profil, le skill CV et ton historique (voir `personal.example/README.md`).
 2. Double-clique **`install.bat`**. Il installe Python, les dépendances, MiKTeX (LaTeX), qpdf et poppler. Il crée aussi
-   `Downloads\Candidatures\envoyees` et les passages planifiés de **11h** et **19h**.
+   `Downloads\Candidatures\envoyees`, les passages planifiés de **11h** et **19h** et le démarrage discret à l'ouverture
+   de session pour la veille.
 3. Dans Chrome, ouvre `chrome://extensions`, active le **Mode développeur**, puis clique **Charger l'extension non
    empaquetée** et choisis le dossier `extension`.
 4. Double-clique **`StageAuto.bat`** : le tableau de bord s'ouvre (http://127.0.0.1:8765). L'icône de l'extension
@@ -33,13 +34,46 @@ Application Windows qui fait, deux fois par jour, la routine de candidature de s
 
 ## Utilisation
 
-- Les passages se lancent seuls à 11h et 19h, ou avec **Lancer un passage**.
-- Au passage de 19h, seules les offres apparues depuis le passage précédent sont traitées.
-- S'il manque une connexion, une notification te le dit tout de suite. Les autres sites continuent, et les offres
-  mises de côté sont réessayées dès que tu t'es connecté.
+- **Veille (postuler parmi les premiers)** : de 8h à 22h, toutes les ~30 min, l'application cherche les nouvelles offres
+  et postule aussitôt. LinkedIn est consulté au plus une fois par heure, avec une seule recherche. `install.bat` lance
+  l'application discrètement à l'ouverture de session pour que la veille tourne toute la journée.
+- **Passages complets** à 11h et 19h : en plus des offres, contacts LinkedIn, suivi des acceptations, Gmail et nouvel essai
+  des sites reconnectés.
+- Boutons du tableau de bord : **Vérifier maintenant** (veille immédiate) et **Passage complet**.
+- S'il manque une connexion, une notification te le dit. Les autres sites continuent, et les offres mises de côté sont
+  réessayées dès que tu t'es connecté.
 - **Mode validation** (réglage « Envoyer automatiquement » décoché) : l'agent remplit tout et s'arrête avant l'envoi.
   Tu valides ensuite chaque candidature d'un clic dans le tableau de bord.
 - Les PDF envoyés sont copiés dans `Downloads\Candidatures\envoyees\<Entreprise_Sujet>\`.
+
+## Postuler vite et parmi les premiers
+
+- **Priorité** : chaque offre reçoit une note. Elle monte avec la récence (« il y a 12 minutes »), avec les signaux
+  « Soyez parmi les premiers candidats » et « Recrutement actif », quand il y a peu de candidats, en candidature simplifiée,
+  et quand le site a déjà une méthode mémorisée. Les CV des offres les mieux notées sont générés et envoyés en premier.
+- **Flux continu** : chaque candidature part **dès que son CV est prêt**, sans attendre les autres. Pendant ce temps, les
+  CV suivants sont générés en parallèle.
+- **Deux voies en parallèle** : LinkedIn (souris humaine, plus lente) et les autres sites postulent en même temps, chacun
+  dans sa fenêtre Chrome.
+- **Pré-tri sans IA** : l'alternance, le CDI, les stages de moins de 6 mois, une habilitation ou la nationalité française
+  exigée et un début en 2026 sont écartés avant tout appel à l'IA. En cas de doute, l'offre passe et l'IA tranche.
+- **Attentes intelligentes** : l'application attend que la page soit prête au lieu de faire des pauses fixes, et repère
+  tout de suite les nouveaux onglets.
+- **CV rapide** (réglage) : modèles adaptés au lieu du skill complet, environ 4 fois plus rapide. La qualité maximale reste
+  le skill, réglage par défaut.
+- L'onglet **Mémoire et apprentissage** affiche le délai moyen entre la détection et la candidature, et l'âge des offres
+  au moment de postuler.
+
+## Vérifications
+
+- **Avant l'envoi** : l'application relit le formulaire et bloque le clic sur « Envoyer » s'il reste un champ obligatoire
+  vide, une case obligatoire non cochée, une question sans réponse, un fichier manquant ou un message d'erreur. L'agent
+  corrige d'abord ; la relecture rapide passe la main à l'agent.
+- **Après l'envoi** : la confirmation affichée est exigée. Sur LinkedIn, l'offre est rouverte pour vérifier
+  « Candidature envoyée ». Les accusés de réception reçus dans Gmail sont rapprochés des candidatures. Le tableau de bord
+  marque chaque candidature : ✓ confirmation affichée, confirmée par LinkedIn, accusé de réception reçu, ou ⚠ à vérifier.
+- **Avant de postuler** : pas de doublon (même offre sur plusieurs sites), au plus 3 offres par entreprise et par jour, et
+  aucune réponse sensible.
 
 ## Mémoire des sites et courbe d'apprentissage
 
@@ -125,6 +159,7 @@ stageauto/
   cdp.py              couche navigateur (extension ou Playwright), souris/clavier humains, curseur visible, instantané de page
   providers.py        fournisseurs d'IA : Claude ou service compatible OpenAI (clé personnelle), relais automatique
   replay.py           relecture des méthodes mémorisées sans IA
+  priority.py         priorité des offres (récence, « premiers candidats ») et pré-tri sans IA
   agent.py            agent Claude (outils read_page, find, click, type, upload, auto_fill, fill_credentials, finish…)
   forms.py            réponses autorisées, remplissage automatique, détection des questions interdites
   cvskill.py          CV + lettre via le skill (SKILL.md + profil.md), build.py, correction, repli modèles

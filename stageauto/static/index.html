@@ -48,8 +48,10 @@ a{color:var(--accent)}
 <header>
   <h1>StageAuto</h1>
   <span class="pill" id="phase"><span class="dot" id="phdot"></span><span id="phtxt">…</span></span>
+  <span class="pill muted" id="watchtxt" title="Veille : vérifications fréquentes pour postuler parmi les premiers"></span>
   <span style="flex:1"></span>
-  <button class="primary" id="runbtn" onclick="api('/api/run','POST')">Lancer un passage</button>
+  <button id="quickbtn" onclick="api('/api/run?mode=quick','POST')" title="Nouvelles offres seulement, candidature immédiate">Vérifier maintenant</button>
+  <button class="primary" id="runbtn" onclick="api('/api/run','POST')">Passage complet</button>
   <button onclick="api('/api/stop','POST')">Arrêter</button>
 </header>
 <main>
@@ -86,7 +88,10 @@ a{color:var(--accent)}
     <div data-p="contacts" hidden><div class="tablewrap"><table><thead><tr><th>Date</th><th>Entreprise</th><th>Personne</th><th>Rôle</th><th>Statut</th></tr></thead><tbody id="ctable"></tbody></table></div></div>
     <div data-p="journal" hidden><pre class="log" id="log"></pre><p class="muted" id="summary"></p></div>
     <div data-p="notes" hidden>
-      <h2>Courbe d'apprentissage</h2>
+      <h2>Rapidité : postuler parmi les premiers</h2>
+      <div class="tablewrap"><table><thead><tr><th>Site</th><th>Candidatures (14 j)</th><th>Délai détection → candidature</th>
+        <th>Âge de l'offre au moment de postuler</th><th>Confirmées</th></tr></thead><tbody id="delays"></tbody></table></div>
+      <h2 style="margin-top:16px">Courbe d'apprentissage</h2>
       <p class="muted">Chaque candidature réussie mémorise la méthode du site ; les suivantes la rejouent sans IA quand c'est possible.</p>
       <div class="tablewrap"><table><thead><tr><th>Site</th><th>Candidatures</th><th>Réussies</th><th>Temps moyen (5 premières → 5 dernières)</th>
         <th>Étapes IA (5 premières → 5 dernières)</th><th>Rejouées sans IA</th></tr></thead><tbody id="curve"></tbody></table></div>
@@ -125,6 +130,16 @@ a{color:var(--accent)}
         <div>
           <h2>Fonctionnement</h2>
           <label class="f"><span><input type="checkbox" id="s_auto_submit"> Envoyer automatiquement (sinon : tout remplir puis attendre ta validation)</span></label>
+          <h2 style="margin-top:12px">Veille : postuler parmi les premiers</h2>
+          <label class="f"><span><input type="checkbox" id="s_watch_enabled"> Vérifier les nouvelles offres régulièrement et postuler aussitôt</span></label>
+          <label class="f">Intervalle de veille (minutes)<input type="number" id="s_watch_interval_min" min="10"></label>
+          <label class="f">Plage horaire de la veille (HH:MM-HH:MM)<input type="text" id="s_watch_hours"></label>
+          <label class="f">LinkedIn : une recherche au plus toutes les (minutes)<input type="number" id="s_linkedin_watch_min" min="30"></label>
+          <label class="f"><span><input type="checkbox" id="s_parallel_lanes"> LinkedIn et autres sites en parallèle (2 fenêtres)</span></label>
+          <label class="f"><span><input type="checkbox" id="s_prescreen"> Écarter sans IA les offres hors cible (alternance, durée, habilitation…)</span></label>
+          <label class="f">CV et lettre<select id="s_cv_mode"><option value="skill">Skill complet (qualité maximale)</option>
+            <option value="rapide">Rapide (modèles adaptés, ~4x plus rapide)</option></select></label>
+          <h2 style="margin-top:12px">Navigation</h2>
           <label class="f">Navigateur<select id="s_browser_backend"><option value="extension">Mon Chrome (extension StageAuto Bridge)</option><option value="playwright">Chrome dédié (profil StageAuto)</option></select></label>
           <label class="f">Heures des passages (HH:MM, séparées par des virgules)<input type="text" id="s_schedule"></label>
           <label class="f">Max candidatures par passage<input type="number" id="s_max_applications_per_pass"></label>
@@ -168,13 +183,20 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
   if (b.dataset.t === 'offres') loadOffers(); if (b.dataset.t === 'contacts') loadContacts();
   if (b.dataset.t === 'notes') { loadNotes(); loadLearning(); } if (b.dataset.t === 'reglages') loadSettings();
 });
+const VERIF = {page: 'confirmation affichée', linkedin: 'confirmée par LinkedIn', email: 'accusé de réception reçu', 'à vérifier': 'à vérifier'};
+function verif(v) { if (!v) return ''; const warn = v === 'à vérifier';
+  return `<span class="st ${warn ? 'error' : 'applied'}" title="${esc(VERIF[v] || v)}">${warn ? '⚠ à vérifier' : '✓ ' + esc(VERIF[v] || v)}</span>`; }
 function pdfLinks(folder) { return folder ? `<a href="/files?path=${encodeURIComponent(folder)}" target="_blank" title="${esc(folder)}">dossier</a>` : ''; }
 async function refresh() {
   const d = await api('/api/state'); if (!d) return;
   SITES = d.sites; const st = d.state;
-  $('#phtxt').textContent = st.running ? `${st.phase} ${st.detail || ''}` : (st.phase === 'terminé' ? `Terminé à ${(st.ended || '').slice(11, 16)}` : 'En attente');
+  const lanes = Object.entries(st.lanes || {}).map(([k, v]) => `${k === 'linkedin' ? 'LinkedIn' : 'Sites'} : ${v}`).join(' | ');
+  $('#phtxt').textContent = st.running ? `${st.mode === 'quick' ? 'Veille — ' : ''}${st.phase} ${lanes || st.detail || ''}`
+    : (st.phase === 'terminé' ? `Terminé à ${(st.ended || '').slice(11, 16)}` : 'En attente');
   $('#phdot').className = 'dot ' + (st.running ? 'warn' : 'ok');
-  $('#runbtn').disabled = st.running;
+  $('#runbtn').disabled = $('#quickbtn').disabled = st.running;
+  $('#watchtxt').textContent = d.watch && d.watch.enabled ? (st.next_check ? `Veille : prochaine vérification ${st.next_check.slice(11, 16)}` : 'Veille active')
+    : 'Veille désactivée';
   $('#extdot').className = 'dot ' + (d.extension ? 'ok' : (d.backend === 'extension' ? 'bad' : ''));
   $('#exttxt').textContent = d.extension ? 'connectée' : (d.backend === 'extension' ? 'non connectée' : 'non utilisée');
   const foreign = d.provider === 'openai_compatible';
@@ -190,7 +212,8 @@ async function refresh() {
   $('#kpi').innerHTML = [['Postulées', (d.applied_today || []).length], ['Trouvées', Object.values(c).reduce((a, b) => a + b, 0)],
     ['Ignorées', c.ignored || 0], ['Invitations', d.invites_today], ['InMails', d.inmails_today], ['Total postulées', d.total_applied]]
     .map(([l, v]) => `<div><b>${v}</b><span class="muted">${l}</span></div>`).join('');
-  $('#applied').innerHTML = (d.applied_today || []).map(o => `<div class="row"><span class="grow"><b>${esc(o.company)}</b> — ${esc(o.title)}</span>
+  $('#applied').innerHTML = (d.applied_today || []).map(o => `<div class="row"><span class="grow"><b>${esc(o.company)}</b> — ${esc(o.title)}
+     <span class="muted">${o.delay_min != null ? `· ${o.delay_min} min après détection` : ''}</span></span>${verif(o.verified)}
      <a href="${esc(o.url)}" target="_blank">offre</a> ${pdfLinks(o.folder)}</div>`).join('') || '<span class="muted">Aucune candidature aujourd\'hui.</span>';
   const al = [];
   if (st.needs_login && st.needs_login.length) al.push(`Connexion requise : ${st.needs_login.map(k => SITES[k] || k).join(', ')} — connecte-toi puis relance (les offres sont réessayées).`);
@@ -206,7 +229,7 @@ async function refresh() {
 async function loadOffers() {
   const rows = await api('/api/offers?status=' + $('#ofilter').value) || [];
   $('#otable').innerHTML = rows.map(o => `<tr><td>${esc(o.company)}</td><td><a href="${esc(o.url)}" target="_blank">${esc(o.title)}</a></td>
-    <td>${esc(o.site)}</td><td><span class="st ${esc(o.status)}">${esc(o.status)}</span></td><td class="muted">${esc((o.reason || '').slice(0, 140))}</td><td>${pdfLinks(o.folder)}</td></tr>`).join('');
+    <td>${esc(o.site)}</td><td><span class="st ${esc(o.status)}">${esc(o.status)}</span> ${verif(o.verified)}</td><td class="muted">${esc((o.reason || '').slice(0, 140))}</td><td>${pdfLinks(o.folder)}</td></tr>`).join('');
 }
 async function loadContacts() {
   const rows = await api('/api/contacts') || [];
@@ -215,6 +238,9 @@ async function loadContacts() {
 async function loadLearning() {
   const L = await api('/api/learning') || {curve: [], recipes: {}, answers: []};
   const arrow = (a, b) => a == null ? '—' : `${a} → <b>${b}</b>`;
+  const mins = m => m == null ? '—' : (m < 120 ? `${m} min` : `${Math.round(m / 60)} h`);
+  $('#delays').innerHTML = (L.delays || []).map(r => `<tr><td>${esc(SITES[r.site] || r.site)}</td><td>${r.n}</td><td>${mins(r.delay_min)}</td>
+    <td>${mins(r.age_at_apply_min)}</td><td>${r.verified} / ${r.n}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Pas encore de candidature.</td></tr>';
   $('#curve').innerHTML = L.curve.map(c => `<tr><td>${esc(SITES[c.site] || c.site)}</td><td>${c.n}</td><td>${c.ok}</td>
     <td>${arrow(c.first5, c.last5)} s</td><td>${arrow(c.llm_steps_first5, c.llm_steps_last5)}</td><td>${c.replay_share} %</td></tr>`).join('')
     || '<tr><td colspan="6" class="muted">Pas encore de candidature.</td></tr>';

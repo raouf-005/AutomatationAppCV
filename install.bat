@@ -45,6 +45,8 @@ echo [5/6] Dossiers et planification...
 if not exist "%USERPROFILE%\Downloads\Candidatures\envoyees" mkdir "%USERPROFILE%\Downloads\Candidatures\envoyees"
 schtasks /Create /F /SC DAILY /ST 11:00 /TN "StageAuto 11h" /TR "\"%~dp0StageAuto.bat\" --run --no-open" >nul
 schtasks /Create /F /SC DAILY /ST 19:00 /TN "StageAuto 19h" /TR "\"%~dp0StageAuto.bat\" --run --no-open" >nul
+rem Demarrage discret a l'ouverture de session : la veille (toutes les ~30 min) tourne toute la journee
+schtasks /Create /F /SC ONLOGON /DELAY 0002:00 /TN "StageAuto demarrage" /TR "\"%~dp0StageAuto.bat\" --no-open" >nul
 
 rem --- 6. Auto-test (compile un CV d'essai ; MiKTeX telecharge les paquets manquants la premiere fois) ---
 echo [6/6] Auto-test...

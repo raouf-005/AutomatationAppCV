@@ -30,7 +30,8 @@ SNAP_JS = r"""
 (opts) => {
   opts = opts || {};
   const MAX = opts.max || 220;
-  const reg = window.__sa = {map: {}, n: 0};
+  // keep : lecture de contrôle qui ne renumérote pas les références en cours d'utilisation
+  const reg = opts.keep ? {map: {}, n: 0} : (window.__sa = {map: {}, n: 0});
   const clean = t => (t || '').replace(/\s+/g, ' ').trim();
   const cut = (t, n) => { t = clean(t); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
   const visible = el => { const r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false;
@@ -252,17 +253,47 @@ class Tab:
 
     async def wait_ready(self, timeout=25):
         t0 = time.time()
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.15)
         while time.time() - t0 < timeout:
             try:
                 st = await self.eval("document.readyState", timeout=5)
                 if st in ("interactive", "complete"):
-                    await asyncio.sleep(0.6)
+                    await asyncio.sleep(0.25)
                     return True
             except Exception:
                 pass
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.25)
         return False
+
+    async def settle(self, max_wait=8.0, min_wait=0.3):
+        """Attend que la page soit chargée et que le DOM ne bouge plus (au lieu d'une pause fixe)."""
+        t0 = time.time()
+        await asyncio.sleep(min_wait)
+        last = None
+        while time.time() - t0 < max_wait:
+            try:
+                st = await self.eval("() => [document.readyState, document.getElementsByTagName('*').length,"
+                                     " !!document.querySelector('[aria-busy=true]')]", timeout=5)
+            except Exception:
+                st = None
+            if st and st[0] == "complete" and not st[2] and last is not None and abs(st[1] - last) < 3:
+                return True
+            last = st[1] if st else None
+            await asyncio.sleep(0.25)
+        return False
+
+    async def wait_for(self, js_predicate: str, timeout=10.0, every=0.25):
+        """Attend qu'une condition JS soit vraie (ex. cartes d'offres affichées). Renvoie sa valeur ou None."""
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            try:
+                v = await self.eval(js_predicate, timeout=5)
+                if v:
+                    return v
+            except Exception:
+                pass
+            await asyncio.sleep(every)
+        return None
 
     async def goto(self, url, timeout=40):
         self.last_url = url
@@ -398,7 +429,7 @@ class Tab:
                 " const dt = new DataTransfer(); dt.items.add(new File([u], name, {type: mime})); this.files = dt.files;"
                 " this.dispatchEvent(new Event('input', {bubbles: true})); this.dispatchEvent(new Event('change', {bubbles: true})); }",
                 "arguments": [{"value": b64}, {"value": p.name}, {"value": mime}]})
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1.0)
         return True
 
     async def press(self, key):
@@ -458,7 +489,7 @@ class Browser:
     async def cdp(self, tid, method, params):
         raise NotImplementedError
 
-    async def new_tab(self, url=None) -> Tab:
+    async def new_tab(self, url=None, lane=0) -> Tab:
         raise NotImplementedError
 
     async def tab_ids(self) -> list:
@@ -483,7 +514,7 @@ class Browser:
                 t = Tab(self, new[-1])
                 await t.wait_ready()
                 return t
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(0.15)
         return None
 
     async def open(self, url) -> Tab:
@@ -546,8 +577,8 @@ class ExtensionBrowser(Browser):
     async def cdp(self, tid, method, params):
         return await BRIDGE.call("cdp", tabId=tid, method=method, params=params) or {}
 
-    async def new_tab(self, url=None):
-        r = await BRIDGE.call("tabs.create", url=url or "about:blank")
+    async def new_tab(self, url=None, lane=0):
+        r = await BRIDGE.call("tabs.create", url=url or "about:blank", lane=lane)
         t = Tab(self, r["tabId"])
         if url:
             await t.wait_ready()
@@ -612,9 +643,13 @@ class PlaywrightBrowser(Browser):
         s = self.sessions.get(tid)
         if s is None:
             s = self.sessions[tid] = await self.ctx.new_cdp_session(page)
+            try:
+                await s.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
+            except Exception:
+                pass
         return await s.send(method, params)
 
-    async def new_tab(self, url=None):
+    async def new_tab(self, url=None, lane=0):
         p = await self.ctx.new_page()
         t = Tab(self, self._register(p))
         if url:

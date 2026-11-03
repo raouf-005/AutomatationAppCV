@@ -279,3 +279,38 @@ SUCCESS_RE = re.compile(
 def looks_success(url: str, text: str) -> bool:
     return bool(re.search(r"thank|merci|success|confirmation|bounce|applythankyou", url or "", re.I)) or \
         bool(SUCCESS_RE.search(text or ""))
+
+
+PLACEHOLDER_RE = re.compile(r"^\s*(--|choisi|select|selectionn|veuillez|please|aucun|none|-)\b|^\s*$")
+
+
+def presubmit_problems(snap) -> list:
+    """Contrôle avant l'envoi : champs obligatoires vides, cases obligatoires, fichiers manquants, erreurs affichées."""
+    probs, groups = [], {}
+    for it in snap.get("items", []):
+        role, name = it["role"], (it.get("name") or "")[:70]
+        if role == "radio":
+            g = groups.setdefault(it.get("group") or name, {"req": False, "checked": False})
+            g["req"] |= bool(it.get("required"))
+            g["checked"] |= bool(it.get("checked"))
+            continue
+        if it.get("invalid"):
+            probs.append(f"champ signalé invalide : {name}")
+            continue
+        if not it.get("required"):
+            continue
+        if role.startswith("textbox") or role == "textarea":
+            if not (it.get("value") or "").strip():
+                probs.append(f"champ obligatoire vide : {name}")
+        elif role == "select":
+            if PLACEHOLDER_RE.search(nrm(it.get("value") or "")):
+                probs.append(f"liste obligatoire non choisie : {name}")
+        elif role == "checkbox":
+            if not it.get("checked"):
+                probs.append(f"case obligatoire non cochée : {name}")
+        elif role == "file":
+            if not it.get("files"):
+                probs.append(f"fichier obligatoire manquant : {name}")
+    probs += [f"question obligatoire sans réponse : {g[:70]}" for g, d in groups.items() if d["req"] and not d["checked"]]
+    probs += [f"message d'erreur : {e}" for e in snap.get("errors", [])]
+    return probs[:6]

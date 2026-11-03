@@ -257,3 +257,44 @@ def learning_curve():
                     "llm_steps_last5": avg([r["llm_steps"] or 0 for r in ok[-5:]]),
                     "last": [{"s": r["seconds"], "m": r["mode"]} for r in ok[-20:]]})
     return sorted(res, key=lambda r: -r["n"])
+
+
+def set_data(key: str, **kv) -> None:
+    """Ajoute des informations à une offre (ex. vérification) sans toucher à ses autres colonnes."""
+    r = q("SELECT data FROM offers WHERE key=?", (key,))
+    if not r:
+        return
+    d = json.loads(r[0]["data"] or "{}")
+    d.update(kv)
+    x("UPDATE offers SET data=? WHERE key=?", (json.dumps(d, ensure_ascii=False), key))
+
+
+def offer_data(key: str) -> dict:
+    r = q("SELECT * FROM offers WHERE key=?", (key,))
+    return {**r[0], **json.loads(r[0]["data"] or "{}")} if r else {}
+
+
+def delay_stats(days=14):
+    """Rapidité : minutes entre la détection d'une offre et la candidature, âge de l'offre au moment de postuler."""
+    since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    out = {}
+    for r in q("SELECT site, found_at, applied_at, data FROM offers WHERE status='applied' AND applied_at >= ? "
+               "AND found_at >= ?", (since, since)):
+        try:
+            d = (dt.datetime.fromisoformat(r["applied_at"]) - dt.datetime.fromisoformat(r["found_at"])).total_seconds() / 60
+        except (TypeError, ValueError):
+            continue
+        age = (json.loads(r["data"] or "{}").get("age_min"))
+        s = out.setdefault(r["site"], {"n": 0, "delay": [], "age": [], "verified": 0})
+        s["n"] += 1
+        s["delay"].append(max(0, d))
+        if age is not None:
+            s["age"].append(age + d)
+        if json.loads(r["data"] or "{}").get("verified"):
+            s["verified"] += 1
+    res = []
+    for site, s in out.items():
+        avg = lambda a: round(sum(a) / len(a)) if a else None  # noqa: E731
+        res.append({"site": site, "n": s["n"], "delay_min": avg(s["delay"]), "age_at_apply_min": avg(s["age"]),
+                    "verified": s["verified"]})
+    return sorted(res, key=lambda r: -r["n"])
