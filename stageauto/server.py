@@ -69,6 +69,14 @@ def start_run(trigger="manuel", mode="full"):
     return True
 
 
+@app.get("/favicon.ico")
+async def favicon():
+    from fastapi.responses import Response
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#1f7a4d"/>'
+           '<path d="M5 8.5l2 2 4-4.5" stroke="#fff" stroke-width="1.8" fill="none"/></svg>')
+    return Response(svg, media_type="image/svg+xml")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return (PKG / "static" / "index.html").read_text(encoding="utf-8")
@@ -104,6 +112,9 @@ async def state():
             r["delay_min"] = None
     st = dict(pipeline.STATE)
     st.pop("stop", None)
+    st.pop("connections_ts", None)
+    st.pop("linkedin_last_search", None)
+    st.pop("last_full_started", None)
     return {
         "state": st, "extension": bool(cdp.BRIDGE.ws), "backend": s.get("browser_backend"),
         "watch": {"enabled": s.get("watch_enabled", True), "interval": s.get("watch_interval_min", 30),
@@ -232,10 +243,17 @@ async def open_login(site: str):
 
 @app.post("/api/check_connections")
 async def check_conn():
-    b = await cdp.get_browser()
-    ids = [k for k, v in load_settings().get("sites_enabled", {}).items() if v and k in SITES]
-    pipeline.STATE["connections"] = await pipeline.check_connections(b, ids)
-    return pipeline.STATE["connections"]
+    s = load_settings()
+    if s.get("browser_backend", "extension") == "extension" and not cdp.BRIDGE.ws:
+        # sans l'extension, la vérification se ferait dans le Chrome dédié, où tu n'es connecté nulle part
+        return {"error": "L'extension StageAuto Bridge n'est pas connectée. Clique sur son icône dans Chrome puis "
+                         "« Reconnecter ». Elle doit être installée dans le profil Chrome où tu es connecté à LinkedIn."}
+    b = await cdp.get_browser(wait_ext=3)
+    ids = [k for k, v in s.get("sites_enabled", {}).items() if v and k in SITES]
+    res = await pipeline.check_connections(b, ids)
+    pipeline.STATE["connections"].update(res)
+    pipeline.STATE["connections_ts"] = dt.datetime.now()
+    return {"connections": res, "info": pipeline.STATE.get("connections_info", {}), "browser": b.kind}
 
 
 @app.post("/api/review/{key}")

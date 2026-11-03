@@ -148,6 +148,10 @@ des CV et de l'agent dépend du modèle choisi.
   restriction du compte, sans le supprimer.
 - **Coût** : compter grossièrement quelques dizaines de centimes de dollar par candidature (CV + agent). La facture
   Anthropic fait foi.
+- **Un site connecté apparaît « non connecté »** : clique « Vérifier les connexions ». Sous chaque site s'affiche ce qui a
+  été vu (ex. « session LinkedIn active (cookie li_at) », « redirigé vers la page de connexion »). Point orange = pas sûr :
+  le site est utilisé quand même. Seul un rouge sûr fait sauter un site. Si tout est rouge, l'extension n'est sans doute
+  pas connectée, ou elle est installée dans un autre profil Chrome que celui où tu es connecté.
 - **Le tableau de bord ne s'ouvre pas** : lance **`StageAuto_debug.bat`**. Il démarre l'application avec une console qui
   affiche les messages ; envoie ces lignes si tu as besoin d'aide. Le détail est aussi dans
   `%LOCALAPPDATA%\StageAuto\console.log` et `stageauto.log`.

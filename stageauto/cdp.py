@@ -309,6 +309,14 @@ class Tab:
         except Exception:
             return ""
 
+    async def cookies(self, urls):
+        """Cookies du vrai Chrome pour ces adresses (y compris HttpOnly, comme la session LinkedIn)."""
+        try:
+            r = await self.send("Network.getCookies", {"urls": urls})
+            return r.get("cookies", []) or []
+        except Exception:
+            return []
+
     async def text(self, sel="body", limit=15000):
         return (await self.eval("(s) => { const e = document.querySelector(s); return e ? e.innerText : '' }", sel) or "")[:limit]
 

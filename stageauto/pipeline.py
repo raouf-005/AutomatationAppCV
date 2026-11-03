@@ -19,13 +19,13 @@ from pathlib import Path
 from . import cdp, cvskill, db, gmail, linkedin_contacts, priority, replay, vault
 from .agent import Agent
 from .config import CANDIDATURES, DOMAIN_NEG, DOMAIN_POS, WORK, load_settings
-from .forms import nrm
+from .forms import NeedLogin, nrm
 from .notify import log, push
 from .sites import SITES
 
 STATE = {"running": False, "phase": "en attente", "detail": "", "started": None, "ended": None, "connections": {},
          "connections_ts": None, "needs_login": [], "review": {}, "summary": None, "stop": False, "mode": "",
-         "lanes": {}, "next_check": None, "linkedin_last_search": None}
+         "lanes": {}, "next_check": None, "linkedin_last_search": None, "connections_info": {}}
 LANE_WINDOW = {"linkedin": 1, "web": 2, "all": 1}
 
 
@@ -58,27 +58,32 @@ async def check_connections(browser, ids):
     s = load_settings()
 
     async def one(sid):
+        """True = connecté, False = sûrement déconnecté (site sauté), None = pas sûr (site utilisé quand même)."""
         site = SITES[sid]
+        info = STATE.setdefault("connections_info", {})
         if not site.needs_login:
-            res[sid] = True
+            res[sid], info[sid] = True, "connexion facultative"
             return
         home = site.base + "/fr/job-offers" if sid == "jobteaser" else site.home
         tab = await browser.new_tab(home)
         try:
             await tab.settle(5)
-            ok = await site.logged_in(tab)
-            if not ok and vault.get_cred(sid):
+            ok, why = await site.login_state(tab)
+            if ok is False and vault.get_cred(sid):
                 await tab.goto(site.login_url or home)
                 r = await Agent(browser, tab, sid).run(
                     f"Connecte-toi à {site.name} : repère les champs identifiant et mot de passe (read_page), utilise "
                     "fill_credentials, clique le bouton de connexion. Captcha, code par e-mail/SMS ou 2FA : finish needs_login. "
                     "Connexion réussie : finish done.", max_steps=12)
                 await tab.goto(home)
-                ok = r["status"] == "done" and await site.logged_in(tab)
-            res[sid] = bool(ok)
+                await tab.settle(5)
+                ok, why = await site.login_state(tab)
+                why = f"après connexion automatique ({r['status']}) : {why}"
+            res[sid], info[sid] = ok, why
+            log(f"connexion {site.name} : {'oui' if ok else 'NON' if ok is False else 'pas sûr'} — {why}")
         except Exception as e:
             log(f"connexion {sid} : {e.__class__.__name__}")
-            res[sid] = False
+            res[sid], info[sid] = None, f"vérification impossible ({e.__class__.__name__}) : site essayé quand même"
         finally:
             await tab.close()
     sem = asyncio.Semaphore(s.get("parallel_tabs", 3))
@@ -118,12 +123,20 @@ async def gather_offers(browser, ids, hours, quick=False):
                     lst = await SITES[sid].search(browser, hours, quick=quick)
                 except TypeError:  # site ajouté sans le mode veille
                     lst = await SITES[sid].search(browser, hours)
-                if sid == "linkedin":
-                    STATE["linkedin_last_search"] = dt.datetime.now()
-                log(f"{SITES[sid].name} : {len(lst)} offres listées")
-                found.extend(lst)
+            except NeedLogin as e:  # mur de connexion pendant la recherche : vraiment déconnecté
+                STATE["connections"][sid] = False
+                STATE.setdefault("connections_info", {})[sid] = str(e)
+                if sid not in STATE["needs_login"]:
+                    STATE["needs_login"].append(sid)
+                log(f"{SITES[sid].name} : {e}")
+                return
             except Exception as e:
                 log(f"recherche {sid} : {e.__class__.__name__} {str(e)[:100]}")
+                return
+            if sid == "linkedin":
+                STATE["linkedin_last_search"] = dt.datetime.now()
+            log(f"{SITES[sid].name} : {len(lst)} offres listées")
+            found.extend(lst)
     await asyncio.gather(*(one(i) for i in ids))
     return found
 
@@ -437,13 +450,13 @@ async def run_pass(trigger="manuel", mode="full"):
                                        "garde Chrome ouvert.")
         phase("connexions", ", ".join(enabled))
         conn = await connections(browser, enabled, quick)
-        missing = [SITES[k].name for k, ok in conn.items() if not ok]
+        missing = [SITES[k].name for k, ok in conn.items() if ok is False]
         summary["missing"] = missing
         if missing and not quick:
             push("Connecte-toi à : " + ", ".join(missing),
                  "Dans Chrome (ou bouton « Se connecter » du tableau de bord) – je postule dès que c'est fait.")
         hours = window_hours(quick)
-        ok_ids = [k for k, ok in conn.items() if ok]
+        ok_ids = [k for k, ok in conn.items() if ok is not False]  # « pas sûr » : essayé quand même
         if quick and "linkedin" in ok_ids and not linkedin_due():
             ok_ids.remove("linkedin")  # LinkedIn : une recherche par heure au plus en veille
         phase("recherche", f"offres des {hours:.1f} dernières heures ({', '.join(ok_ids)})")
@@ -477,12 +490,12 @@ async def run_pass(trigger="manuel", mode="full"):
                 log(f"{n} candidature(s) confirmée(s) par un accusé de réception")
             if missing and not STATE["stop"]:
                 phase("nouvel essai", "sites qui étaient déconnectés")
-                again = await check_connections(browser, [k for k, ok in conn.items() if not ok])
+                again = await check_connections(browser, [k for k, ok in conn.items() if ok is False])
                 STATE["connections"].update(again)
-                back = [k for k, ok in again.items() if ok]
+                back = [k for k, ok in again.items() if ok is not False]
                 if back:
                     await stream(browser, select_new(await gather_offers(browser, back, hours)), summary)
-                summary["missing"] = [SITES[k].name for k, ok in again.items() if not ok]
+                summary["missing"] = [SITES[k].name for k, ok in again.items() if ok is False]
             await retry_blocked_login(browser, summary)
     except Exception as e:
         log(f"passage interrompu : {e.__class__.__name__} {e}", "error")
@@ -515,7 +528,7 @@ async def retry_blocked_login(browser, summary):
     sites_ok = await check_connections(browser, ids)
     redo = []
     for r in rows:
-        if sites_ok.get(r["site"]):
+        if sites_ok.get(r["site"]) is not False:
             o = {**r, **json.loads(r["data"] or "{}")}
             if o.get("cv") and Path(o["cv"]).exists():
                 redo.append(o)
@@ -608,9 +621,9 @@ async def test_linkedin():
                 await cdp.BRIDGE.call("window.show")
             except Exception:
                 pass
-        ok = await site.logged_in(tab)
-        log(f"LinkedIn connecté : {'oui' if ok else 'NON'}")
-        if not ok:
+        ok, why = await site.login_state(tab)
+        log(f"LinkedIn connecté : {'oui' if ok else 'NON' if ok is False else 'pas sûr'} — {why}")
+        if ok is False:
             push("Test LinkedIn", "Connecte-toi à LinkedIn dans la fenêtre Chrome ouverte, puis relance le test.")
             return
         phase("test LinkedIn", "recherche des offres des dernières 24 h")

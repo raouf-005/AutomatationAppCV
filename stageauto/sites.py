@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from urllib.parse import quote
 
 from .config import load_settings
+from .forms import NeedLogin
 from .notify import log
 
 LINKS_JS = r"""(pat) => { const re = new RegExp(pat); const out = {};
@@ -58,6 +59,25 @@ async def search_pages(browser, urls, pattern, wait_js, make):
     return list(out.values())
 
 
+LOGIN_STATE_JS = r"""() => {
+  if (document.readyState !== 'complete') return null;
+  const where = location.pathname + location.search;
+  if (/(sign_?in|signin|login|connexion|\/auth\b|authwall|checkpoint)/i.test(where))
+    return {s: 'no', why: 'redirigé vers la page de connexion'};
+  const els = [...document.querySelectorAll('a, button, [role=button], [role=menuitem]')];
+  const txt = e => ((e.textContent || '') + ' ' + (e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('title') || ''))
+    .replace(/\s+/g, ' ').trim().toLowerCase();
+  // présents même dans un menu fermé (textContent, pas innerText)
+  const OUT = /(^|\b)(se d[ée]connecter|d[ée]connexion|log ?out|sign ?out)(\b|$)|mon (profil|compte|espace)|my (profile|account)|mes candidatures|my applications|espace candidat/;
+  const IN = /^(se connecter|connexion|s'identifier|me connecter|je me connecte|log ?in|sign ?in)$/;
+  const out = els.find(e => OUT.test(txt(e)));
+  if (out) return {s: 'yes', why: '« ' + txt(out).slice(0, 40) + ' » présent'};
+  const vis = els.find(e => e.offsetParent !== null && IN.test(txt(e)));
+  if (vis) return {s: 'no', why: 'bouton « ' + txt(vis).slice(0, 30) + ' » visible'};
+  return null;
+}"""
+
+
 @dataclass
 class SiteDef:
     id: str
@@ -68,8 +88,15 @@ class SiteDef:
     hint_url: str = ""
     extra: dict = field(default_factory=dict)
 
+    async def login_state(self, tab):
+        """(True | False | None, raison). None = pas d'indice clair : le site est utilisé quand même."""
+        r = await tab.wait_for(LOGIN_STATE_JS, timeout=8)
+        if not r:
+            return None, "pas d'indice de connexion (site utilisé quand même)"
+        return r["s"] == "yes", r["why"]
+
     async def logged_in(self, tab) -> bool:
-        return True
+        return (await self.login_state(tab))[0] is not False
 
     async def search(self, browser, since_hours, quick=False) -> list:
         return []
@@ -90,9 +117,22 @@ class SiteDef:
 
 # ----------------------------------------------------------------------------------- LinkedIn
 class LinkedIn(SiteDef):
-    async def logged_in(self, tab):
-        return await tab.eval(r"""() => !/login|authwall|\/uas\/|checkpoint|signup/.test(location.href) &&
-            !!document.querySelector('#global-nav, header.global-nav, nav.global-nav, [data-test-global-nav], .global-nav__content')""")
+    async def login_state(self, tab):
+        # 1. cookie de session (HttpOnly, lu par Chrome) : indépendant de l'apparence de la page
+        if any(c.get("name") == "li_at" for c in await tab.cookies(["https://www.linkedin.com/"])):
+            return True, "session LinkedIn active (cookie li_at)"
+        # 2. sinon, ce que montre la page (la barre de LinkedIn s'affiche après le chargement : on attend)
+        r = await tab.wait_for(r"""() => {
+            if (/login|authwall|\/uas\/|checkpoint|signup/.test(location.href)) return {s: 'no', why: 'redirigé vers la connexion LinkedIn'};
+            if (document.querySelector('#global-nav, header.global-nav, nav.global-nav, .global-nav__me, img.global-nav__me-photo, ' +
+                '[data-test-global-nav], .feed-identity-module, a[href*="/mynetwork/"], a[href*="/messaging/"]'))
+              return {s: 'yes', why: 'barre de navigation LinkedIn connectée'};
+            if (document.readyState === 'complete' && document.querySelector('input[type=password]'))
+              return {s: 'no', why: 'formulaire de connexion LinkedIn'};
+            return null; }""", timeout=12)
+        if not r:
+            return None, "page LinkedIn sans indice clair (essayé quand même)"
+        return r["s"] == "yes", r["why"]
 
     async def search(self, browser, since_hours, quick=False):
         s = load_settings()
@@ -107,7 +147,10 @@ class LinkedIn(SiteDef):
         try:
             for url in urls:  # 2 recherches au plus par passage
                 await tab.goto(url)
-                await tab.wait_for("() => document.querySelectorAll('[data-job-id], [data-occludable-job-id]').length", timeout=8)
+                await tab.wait_for("() => document.querySelectorAll('[data-job-id], [data-occludable-job-id]').length"
+                                   " || /login|authwall|\\/uas\\/|checkpoint/.test(location.href)", timeout=8)
+                if re.search(r"login|authwall|/uas/|checkpoint", await tab.url()):
+                    raise NeedLogin("LinkedIn demande de se reconnecter")
                 prev = -1
                 for _ in range(6):  # défilement tant que de nouvelles cartes apparaissent
                     n = await tab.eval("() => { const l = document.querySelector('.jobs-search-results-list, .scaffold-layout__list > div, .scaffold-layout__list');"
@@ -159,11 +202,6 @@ class LinkedIn(SiteDef):
 
 # ------------------------------------------------------------------------------------- WTTJ
 class WTTJ(SiteDef):
-    async def logged_in(self, tab):
-        if await tab.eval("() => !!document.querySelector(\"a[href*='/fr/me'], [data-testid*='user-menu'], [data-testid*='avatar']\")"):
-            return True
-        return not await tab.eval(NOT_LOGGED_BTN, ["se connecter", "connexion"])
-
     async def search(self, browser, since_hours, quick=False):
         urls = [f"https://www.welcometothejungle.com/fr/jobs?query={quote(kw.replace('stage ', ''))}"
                 "&refinementList%5Bcontract_type%5D%5B%5D=internship&refinementList%5Boffices.country_code%5D%5B%5D=FR&sortBy=mostRecent"
@@ -185,10 +223,10 @@ class JobTeaser(SiteDef):
     def base(self):
         return load_settings().get("jobteaser_base", "https://www.jobteaser.com").rstrip("/")
 
-    async def logged_in(self, tab):
+    async def login_state(self, tab):
         if await tab.eval("() => /sign_in|login|signin|\\/auth/.test(location.href)"):
-            return False
-        return not await tab.eval(NOT_LOGGED_BTN, ["se connecter", "connexion", "log in"])
+            return False, "redirigé vers la connexion JobTeaser (vérifie l'adresse de l'espace école dans Réglages)"
+        return await SiteDef.login_state(self, tab)
 
     async def search(self, browser, since_hours, quick=False):
         urls = [f"{self.base}/fr/job-offers?contract=internship&q={quote(kw.replace('stage ', ''))}&sort=recency"
@@ -200,11 +238,10 @@ class JobTeaser(SiteDef):
 
 # ------------------------------------------------------------------------------------ Indeed
 class Indeed(SiteDef):
-    async def logged_in(self, tab):
-        snap_captcha = await tab.eval("() => /just a moment|un instant/i.test(document.title) || !!document.querySelector(\"iframe[src*='challenges.cloudflare'], #challenge-form\")")
-        if snap_captcha:
-            return False
-        return not await tab.eval("() => [...document.querySelectorAll(\"a[href*='secure.indeed.com/auth'], a[href*='account/login']\")].some(a => a.offsetParent !== null)")
+    async def login_state(self, tab):
+        if await tab.eval("() => /just a moment|un instant/i.test(document.title) || !!document.querySelector(\"iframe[src*='challenges.cloudflare'], #challenge-form\")"):
+            return False, "vérification Cloudflare à valider dans Chrome"
+        return await SiteDef.login_state(self, tab)
 
     async def search(self, browser, since_hours, quick=False):
         out = {}
@@ -241,12 +278,6 @@ class Indeed(SiteDef):
 
 # --------------------------------------------------------------------------------- HelloWork
 class HelloWork(SiteDef):
-    async def logged_in(self, tab):
-        t = await tab.text("body", 20000)
-        if re.search(r"Mon espace|Mes candidatures|Déconnexion|Mon compte", t):
-            return True
-        return not await tab.eval(NOT_LOGGED_BTN, ["se connecter", "connexion"])
-
     async def search(self, browser, since_hours, quick=False):
         d = "d" if since_hours <= 24 else "w"
         urls = [f"https://www.hellowork.com/fr-fr/emploi/recherche.html?k={quote(kw)}&l=France&c=Stage&d={d}" for kw in kw_list(quick)]
@@ -317,9 +348,6 @@ class SmartRecruiters(SiteDef):
 
 # ------------------------------------------------------------------------------- orange.jobs
 class Orange(SiteDef):
-    async def logged_in(self, tab):
-        return bool(re.search(r"Mon profil|Mon compte|Déconnexion|Mes candidatures|Sign out|My profile", await tab.text("body", 20000)))
-
     async def search(self, browser, since_hours, quick=False):
         tab = await browser.new_tab("https://orange.jobs/fr/fr/search-results")
         out = []
@@ -355,5 +383,6 @@ SITES = {
     "hellowork": HelloWork("hellowork", "HelloWork", "https://www.hellowork.com/fr-fr/", "https://www.hellowork.com/fr-fr/connexion.html"),
     "smartrecruiters": SmartRecruiters("smartrecruiters", "SmartRecruiters (sites carrières)", "https://jobs.smartrecruiters.com/",
                                        needs_login=False),
-    "orange": Orange("orange", "orange.jobs", "https://orange.jobs/fr/fr/search-results", "https://orange.jobs/fr/fr/login"),
+    "orange": Orange("orange", "orange.jobs", "https://orange.jobs/fr/fr/search-results", "https://orange.jobs/fr/fr/login",
+                     needs_login=False),
 }
