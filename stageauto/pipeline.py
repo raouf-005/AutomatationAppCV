@@ -7,9 +7,9 @@ import re
 import shutil
 from pathlib import Path
 
-from . import cdp, cvskill, db, gmail, linkedin_contacts, vault
+from . import cdp, cvskill, db, gmail, linkedin_contacts, replay, vault
 from .agent import Agent
-from .config import CANDIDATURES, DOMAIN_NEG, DOMAIN_POS, load_settings
+from .config import CANDIDATURES, DOMAIN_NEG, DOMAIN_POS, WORK, load_settings
 from .forms import nrm
 from .notify import log, push
 from .sites import SITES
@@ -183,21 +183,58 @@ def files_for(o):
     return f
 
 
+def recipe_key(o, url: str) -> str:
+    host = re.sub(r"^https?://([^/]+).*", r"\1", url or "").lower()
+    return f"{o['site']}|{host}" + ("|easy" if o.get("easy") else "")
+
+
 async def apply_one(browser, o):
+    """Méthode mémorisée d'abord (sans IA) ; l'agent prend la suite au premier imprévu ou s'il n'y a pas de méthode."""
     site = SITES[o["site"]]
     tab = await browser.new_tab()
     keep_open = False
+    s = load_settings()
+    auto = s.get("auto_submit", True)
     try:
         extra = await site.start(tab, o)
-        goal = (f"Postule à l'offre de stage « {o['title']} » chez {o['company']} ({o['url']}) avec le CV et la lettre fournis "
-                f"(upload cv / lettre ; texte de motivation : @@LETTRE@@ ; message court : @@MESSAGE@@). {extra} "
-                "Si le site exige de créer un compte, une vidéo ou un captcha : finish blocked/needs_login. "
-                "Succès constaté : finish applied.")
-        ag = Agent(browser, tab, o["site"], files_for(o), o)
-        res = await ag.run(goal)
+        rkey = recipe_key(o, await tab.url())
+        files = files_for(o)
+        res, mode, t0 = None, "agent", dt.datetime.now()
+        if s.get("use_memory", True):
+            try:
+                res = await replay.replay(browser, tab, rkey, files, o, auto=auto)
+            except Exception as e:
+                res = {"status": "fallback", "reason": f"{e.__class__.__name__}", "tab": tab}
+            if res:
+                tab = res.get("tab") or tab
+                mode = "replay"
+                log(f"méthode mémorisée {rkey} : {res['status']} {res.get('reason', '')}")
+        if not res or res["status"] == "fallback":
+            goal = (f"Postule à l'offre de stage « {o['title']} » chez {o['company']} ({o['url']}) avec le CV et la lettre "
+                    f"fournis (upload cv / lettre ; texte de motivation : @@LETTRE@@ ; message court : @@MESSAGE@@). {extra} "
+                    "Si le site exige de créer un compte, une vidéo ou un captcha : finish blocked/needs_login. "
+                    "Succès constaté : finish applied.")
+            ag = Agent(browser, tab, o["site"], files, o)
+            ag.recipe_key = rkey
+            if res:
+                ag.extra_intro = (f"La relecture rapide de la méthode mémorisée s'est arrêtée ({res.get('reason', '')}). "
+                                  "Continue depuis la page actuelle, sans recommencer ce qui est déjà rempli.")
+                mode = "replay+agent"
+            res = await ag.run(goal)
+            tab = ag.tab or tab
+        else:
+            res["steps"] = 0
+        res["seconds"] = round((dt.datetime.now() - t0).total_seconds())
+        db.record_apply(o["site"], rkey, mode, res["seconds"], res.get("steps", 0), res["status"], res.get("provider", ""))
+        if mode.startswith("replay"):  # fiabilité de la méthode mémorisée
+            m = db.method(rkey)
+            if m.get("recipe"):
+                k = "ok" if mode == "replay" and res["status"] in ("applied", "ready") else "fallbacks"
+                m["recipe"][k] = m["recipe"].get(k, 0) + (1 if k == "fallbacks" or mode == "replay" else 0)
+                db.save_method(rkey, m)
         if res["status"] == "ready":
             keep_open = True
-            STATE["review"][o["key"]] = {"tab": ag.tab.id, "site": o["site"], "title": o["title"], "company": o["company"]}
+            STATE["review"][o["key"]] = {"tab": tab.id, "site": o["site"], "title": o["title"], "company": o["company"]}
         return res
     finally:
         if not keep_open:
@@ -262,6 +299,10 @@ async def run_pass(trigger="manuel"):
         phase("navigateur", "connexion à Chrome")
         browser = await cdp.get_browser()
         enabled = [k for k, v in s.get("sites_enabled", {}).items() if v and k in SITES]
+        if "linkedin" in enabled and browser.kind != "extension" and s.get("linkedin_real_chrome_only", True):
+            enabled.remove("linkedin")
+            push("LinkedIn ignoré", "LinkedIn passe uniquement par ton vrai Chrome : charge l'extension StageAuto Bridge et "
+                                   "garde Chrome ouvert.")
         phase("connexions", ", ".join(enabled))
         conn = await check_connections(browser, enabled)
         STATE["connections"] = conn
@@ -327,7 +368,10 @@ async def retry_blocked_login(browser, summary):
     rows = db.q("SELECT * FROM offers WHERE status='blocked_login' AND found_at >= ?", ((dt.date.today() - dt.timedelta(days=1)).isoformat(),))
     if not rows:
         return
-    sites_ok = await check_connections(browser, sorted({r["site"] for r in rows if r["site"] in SITES}))
+    ids = sorted({r["site"] for r in rows if r["site"] in SITES})
+    if browser.kind != "extension" and load_settings().get("linkedin_real_chrome_only", True):
+        ids = [i for i in ids if i != "linkedin"]
+    sites_ok = await check_connections(browser, ids)
     redo = []
     for r in rows:
         if sites_ok.get(r["site"]):
@@ -381,3 +425,83 @@ async def submit_review(key):
         db.set_status(key, "applied", "validée manuellement", folder=folder)
     await tab.close()
     return res["status"]
+
+
+# ------------------------------------------------------------------------- test LinkedIn
+def _test_files():
+    """CV et lettre de la dernière candidature envoyée, sinon CV générique compilé sans appel à Claude."""
+    env = CANDIDATURES / "envoyees"
+    cvs = sorted(env.glob("*/CV_*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True) if env.exists() else []
+    for cv in cvs:
+        lm = next(iter(sorted(cv.parent.glob("Lettre_*.pdf")) + sorted(cv.parent.glob("Cover_Letter_*.pdf"))), None)
+        if lm:
+            return {"cv": str(cv), "lm": str(lm), "lettre_txt": ""}
+    from .gen import generator
+    o = {"e": "Test", "s": "LinkedIn", "dom": "soc", "poste": "Analyste SOC", "domaine": "détection et réponse à incident",
+         "equipe": "SOC", "ville": "Paris", "accroche": "Test.", "pourquoi": "Test.", "kw": [], "puces": [], "skills": [],
+         "savoir": "rigueur", "preuve": "", "lang": "fr"}
+    r = generator.generate(o, WORK / "test_linkedin")
+    return {"cv": r["cv"], "lm": r["lm"], "lettre_txt": r.get("lettre_txt", "")} if r.get("ok") else None
+
+
+async def test_linkedin():
+    """Démonstration visible dans Chrome : connexion, recherche, lecture d'une offre, remplissage de la Candidature
+    simplifiée par l'agent, arrêt AVANT l'envoi. Aucune candidature, invitation ni message n'est envoyé."""
+    if STATE["running"]:
+        return
+    STATE.update(running=True, stop=False, started=db.now(), ended=None)
+    try:
+        phase("test LinkedIn", "ouverture de Chrome")
+        browser = await cdp.get_browser()
+        if browser.kind != "extension" and load_settings().get("linkedin_real_chrome_only", True):
+            push("Test LinkedIn", "Extension StageAuto Bridge non connectée : LinkedIn n'est utilisé que via ton vrai Chrome. "
+                                  "Charge l'extension (chrome://extensions) puis relance.")
+            return
+        site = SITES["linkedin"]
+        tab = await browser.new_tab(site.home)
+        if browser.kind == "extension":
+            try:
+                await cdp.BRIDGE.call("window.show")
+            except Exception:
+                pass
+        ok = await site.logged_in(tab)
+        log(f"LinkedIn connecté : {'oui' if ok else 'NON'}")
+        if not ok:
+            push("Test LinkedIn", "Connecte-toi à LinkedIn dans la fenêtre Chrome ouverte, puis relance le test.")
+            return
+        phase("test LinkedIn", "recherche des offres des dernières 24 h")
+        offers = await site.search(browser, 24)
+        log(f"{len(offers)} offres trouvées :")
+        for o in offers[:12]:
+            log(f"  • {o['company']} — {o['title']}{' (déjà postulé)' if o.get('already') else ''}")
+        cand = [o for o in offers if not o.get("already") and not db.offer_seen(o["key"], o["company"], o["title"])]
+        if not cand:
+            log("Aucune offre non traitée à tester.")
+            return
+        o = cand[0]
+        phase("test LinkedIn", f"lecture de l'offre {o['company']}")
+        await site.details(tab, o)
+        log(f"Descriptif lu : {len(o.get('description', ''))} caractères ; candidature simplifiée : {'oui' if o.get('easy') else 'non'}")
+        if not vault.get_api_key():
+            log("Clé API Claude absente : ajoute-la dans Réglages pour voir l'agent remplir la candidature.")
+            return
+        files = await asyncio.to_thread(_test_files)
+        if not files:
+            log("CV de test indisponible (LaTeX non installé ?)")
+            return
+        phase("test LinkedIn", "l'agent remplit la candidature, SANS l'envoyer")
+        ag = Agent(browser, tab, "linkedin", files, o)
+        ag.auto = False  # le clic final d'envoi est bloqué
+        res = await ag.run(
+            f"TEST, NE RIEN ENVOYER. Sur cette offre ({o['url']}) : ouvre la Candidature simplifiée (s'il n'y en a pas : "
+            "finish blocked « pas de candidature simplifiée »), remplis chaque étape (auto_fill, upload cv si demandé), "
+            "avance jusqu'à l'étape « Vérifier », puis finish ready SANS cliquer « Envoyer la candidature ».", max_steps=25)
+        log(f"Résultat du test : {res['status']} — {res.get('reason', '')}")
+        push("Test LinkedIn terminé", f"{o['company']} : {res['status']}. Rien n'a été envoyé : ferme le dialogue "
+                                      "(croix puis « Abandonner ») dans Chrome.")
+    except Exception as e:
+        log(f"test LinkedIn : {e.__class__.__name__} {e}", "error")
+    finally:
+        STATE["running"] = False
+        STATE["ended"] = db.now()
+        phase("terminé", "test LinkedIn")

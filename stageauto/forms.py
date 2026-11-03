@@ -13,6 +13,9 @@ from .config import BLOCK_PATTERNS, PROFILE, load_settings
 from .notify import log
 
 
+BLOCK_RE = re.compile("|".join(BLOCK_PATTERNS), re.I)
+
+
 class Blocked(Exception):
     """Offre à abandonner (donnée non autorisée, compte, vidéo, captcha)."""
 
@@ -64,7 +67,7 @@ def rule_answer(label: str, f: dict, ctx: dict):
         return (ctx.get("cv"), "file")
     if t == "password":
         raise NeedLogin("mot de passe demandé")
-    if re.search(r"sponsor", L):
+    if re.search(r"sponsor|parrainage|visa", L):
         return (pick(opts, "non", "no") or "Non", "option" if opts else "texte")
     for pat in BLOCK_PATTERNS:
         if re.search(pat, L):
@@ -200,10 +203,10 @@ async def auto_fill(tab, ctx: dict, offer: dict, use_llm=True, snap=None) -> dic
                 ans = (cached, "option" if f.get("options") else "texte")
             elif use_llm and label and (f.get("required") or f.get("options")):
                 a = await asyncio.to_thread(llm.answer_question, label, f.get("options"), offer, f["type"])
-                if a and a.sensitive:
+                if a and a.get("sensitive"):
                     raise Blocked(f"question sensible : {label[:80]}")
-                if a and a.answer:
-                    val = pick(f["options"], a.answer) if f.get("options") else a.answer
+                if a and a.get("answer"):
+                    val = pick(f["options"], a["answer"]) if f.get("options") else a["answer"]
                     if val:
                         db.put_answer(label, f.get("options"), val)
                         ans = (val, "option" if f.get("options") else "texte")

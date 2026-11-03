@@ -61,6 +61,16 @@ DOMAIN_NEG = [
 DEFAULT_SETTINGS = {
     "model": "claude-opus-5-5",
     "browser_backend": "extension",   # extension = ton Chrome habituel ; playwright = Chrome dédié
+    "linkedin_real_chrome_only": True,  # LinkedIn uniquement via ton vrai Chrome (extension), jamais le Chrome dédié
+    "human_mode": "linkedin",         # souris/clavier humains : linkedin | all | off
+    "show_cursor": True,              # curseur visible dans la page pendant que l'application agit
+    "use_memory": True,               # rejouer les méthodes mémorisées avant d'appeler l'IA
+    "llm_provider": "anthropic",      # anthropic | openai_compatible
+    "llm_fallback": True,             # l'autre fournisseur prend le relais si le premier échoue
+    "foreign_preset": "openai",       # openai | mistral | gemini | deepseek | openrouter | groq | (vide = URL libre)
+    "foreign_base_url": "",
+    "foreign_model": "",
+    "foreign_max_tokens": 16000,
     "chrome_path": "",
     "agent_effort": "low",
     "cv_effort": "medium",

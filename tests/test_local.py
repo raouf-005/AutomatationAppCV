@@ -11,7 +11,7 @@ from types import SimpleNamespace as NS
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("STAGEAUTO_DATA", tempfile.mkdtemp())
-from stageauto import agent, cdp, config, forms, llm  # noqa: E402
+from stageauto import agent, cdp, config, forms, providers  # noqa: E402
 
 s = config.load_settings()
 s.update(browser_backend="playwright", headless=True, chrome_path=os.environ.get("STAGEAUTO_CHROME", ""))
@@ -52,7 +52,7 @@ async def main():
     assert vals["civ"] == "Monsieur" and vals["am"] == "n" and vals["cv"] == "cv.pdf" and "nl" not in vals, vals
     print("auto_fill OK :", json.dumps(vals, ensure_ascii=False))
     t2 = await b.new_tab(URL)
-    llm._client = NS(beta=NS(messages=FakeMsgs()))
+    providers._anthropic = NS(beta=NS(messages=FakeMsgs()))
     r = await agent.Agent(b, t2, "test", FILES, {"company": "T", "title": "Stage", "source": "Test"}).run("Postule.")
     assert r["status"] == "applied", r
     assert forms.looks_success(await t2.url(), await t2.text())

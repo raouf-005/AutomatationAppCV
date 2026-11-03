@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import cdp, db, llm, pipeline, vault
+from . import cdp, db, pipeline, providers, vault
 from .config import CANDIDATURES, DATA, PKG, load_settings, save_settings
 from .notify import ALERTS, LOG, log
 from .sites import SITES
@@ -73,7 +73,8 @@ async def state():
     st.pop("stop", None)
     return {
         "state": st, "extension": bool(cdp.BRIDGE.ws), "backend": s.get("browser_backend"),
-        "api_key": bool(vault.get_api_key()), "counts": counts, "applied_today": applied_today,
+        "api_key": bool(vault.get_api_key()), "foreign_key": bool(vault.get_foreign_key()),
+        "provider": s.get("llm_provider", "anthropic"), "counts": counts, "applied_today": applied_today,
         "invites_today": db.invites_today(), "inmails_today": db.inmails_today(),
         "creds": vault.sites_with_creds(list(SITES) + ["gmail"]),
         "alerts": list(ALERTS)[-8:], "log": [l["t"] for l in list(LOG)[-120:]],
@@ -85,6 +86,14 @@ async def state():
 @app.post("/api/run")
 async def run():
     return {"started": start_run("manuel")}
+
+
+@app.post("/api/test_linkedin")
+async def test_linkedin():
+    if pipeline.STATE["running"]:
+        return {"started": False}
+    asyncio.create_task(pipeline.test_linkedin())
+    return {"started": True}
 
 
 @app.post("/api/stop")
@@ -118,7 +127,7 @@ async def get_settings():
 async def set_settings(req: Request):
     body = await req.json()
     s = load_settings()
-    s.update({k: v for k, v in body.items() if k in s or k in ("gmail_index", "chrome_path", "agent_effort", "cv_effort")})
+    s.update({k: v for k, v in body.items() if k in s})
     save_settings(s)
     if "browser_backend" in body:
         await cdp.reset_browser()
@@ -128,8 +137,21 @@ async def set_settings(req: Request):
 @app.post("/api/apikey")
 async def set_key(req: Request):
     vault.set_api_key((await req.json()).get("key", "").strip())
-    llm.reset()
+    providers.reset()
     return {"ok": bool(vault.get_api_key())}
+
+
+@app.post("/api/foreign_key")
+async def set_foreign_key(req: Request):
+    vault.set_foreign_key((await req.json()).get("key", "").strip())
+    return {"ok": bool(vault.get_foreign_key())}
+
+
+@app.get("/api/learning")
+async def learning():
+    recipes = {r["site"]: json.loads(r["data"]).get("recipe") for r in db.q("SELECT * FROM methods WHERE site LIKE '%|%'")}
+    answers = db.q("SELECT question, answer, source, uses FROM answers ORDER BY uses DESC, rowid DESC LIMIT 200")
+    return {"curve": db.learning_curve(), "recipes": recipes, "answers": answers}
 
 
 @app.post("/api/cred")
@@ -202,4 +224,5 @@ async def files(path: str):
 
 @app.get("/api/notes")
 async def notes():
-    return {r["site"]: json.loads(r["data"]) for r in db.q("SELECT * FROM methods WHERE site NOT LIKE '\\_%' ESCAPE '\\'")}
+    return {r["site"]: json.loads(r["data"]) for r in db.q("SELECT * FROM methods WHERE site NOT LIKE '\\_%' ESCAPE '\\'")
+            if "|" not in r["site"]}

@@ -10,9 +10,7 @@ import json
 import re
 import time
 
-import anthropic
-
-from . import db, forms, llm, vault
+from . import db, forms, providers, vault
 from .cdp import BrowserError, Tab
 from .config import PROFILE, load_settings
 from .notify import log
@@ -110,6 +108,12 @@ SITE_HINTS = {
 }
 
 
+def clean_name(name: str) -> str:
+    """Nom de bouton réutilisable d'une offre à l'autre (« Candidature simplifiée pour Stage X » -> « Candidature simplifiée »)."""
+    n = re.split(r"\s+(pour|for|à|to)\s+|\s+[–-]\s+", name or "", maxsplit=1)[0]
+    return n.strip()[:60]
+
+
 class Agent:
     def __init__(self, browser, tab: Tab, site: str, files: dict | None = None, offer: dict | None = None):
         self.browser, self.tab, self.site = browser, tab, site
@@ -118,7 +122,10 @@ class Agent:
         self.auto = load_settings().get("auto_submit", True)
         self.result = None
         self.steps = 0
-        self._flags = {"fallbacks": True, "ctx": True}
+        self.refs: dict = {}
+        self.trace: list = []
+        self.recipe_key = None   # clé de mémoire du site (site|hôte) ; fixée par l'appelant pour les candidatures
+        self.extra_intro = ""
 
     # --------------------------------------------------------------------------- rendu d'une page
     @staticmethod
@@ -155,13 +162,23 @@ class Agent:
             txt = txt[:limit] + "\n… (liste tronquée : utilise find)"
         return txt + "\n\nTexte (extrait) :\n" + (snap.get("text") or "")[:1800]
 
+    def _view(self, snap, limit=9000):
+        self.refs = {it["ref"]: it for it in snap["items"]}
+        return self.render(snap, limit)
+
+    def _remember(self, label, options, value):
+        """Réponse donnée par l'agent : mémorisée pour que le remplissage automatique la reprenne la fois suivante."""
+        if label and value and len(label) > 2 and not forms.BLOCK_RE.search(label):
+            db.put_answer(label, options or None, value, source="agent")
+
     # --------------------------------------------------------------------------------- outils
     async def run_tool(self, name, a):
         tab = self.tab
         if name == "read_page":
-            return self.render(await tab.snapshot(page=a.get("scope") == "page"))
+            return self._view(await tab.snapshot(page=a.get("scope") == "page"))
         if name == "find":
             snap = await tab.snapshot(page=True, max=400, textMax=20000)
+            self.refs = {it["ref"]: it for it in snap["items"]}
             words = [w for w in forms.nrm(a["query"]).split() if len(w) > 2]
             hits = [it for it in snap["items"] if any(w in forms.nrm(it["name"] + " " + it.get("href", "")) for w in words)]
             lines = [f"{it['ref']} {it['role']} \"{it['name']}\"" + (f" = \"{it.get('value')}\"" if it.get("value") else "")
@@ -175,40 +192,63 @@ class Agent:
                         break
             return ("Éléments :\n" + ("\n".join(lines) or "aucun") + "\nTexte :\n" + ("\n".join(ctx) or "aucun"))[:5000]
         if name == "click":
+            item = self.refs.get(a["ref"], {})
+            label = (item.get("name") or "").strip()
             if not self.auto:
                 it = await tab.eval("(r) => { const e = (window.__sa||{map:{}}).map[r]; if (!e) return null;"
                                     " const f = e.closest('form, [role=dialog]');"
-                                    " return {t: (e.innerText || e.value || '').trim(), form: !!(f && f.querySelector('input, textarea, select'))} }", a["ref"])
+                                    " return {t: (e.innerText || e.value || e.getAttribute('aria-label') || '').trim(), form: !!f} }", a["ref"])
                 if it and it["form"] and FINAL_RE.match(it["t"]):
                     return "MODE VALIDATION : ne clique pas sur l'envoi final. Appelle finish(status='ready')."
             before = set(await self.browser.tab_ids())
             await tab.click(a["ref"])
             await asyncio.sleep(1.2)
             newt = await self.browser.wait_new_tab(before, timeout=2.5, opener=tab.id)
+            if item.get("role") in ("button", "link") and label:
+                self.trace.append({"a": "click", "name": clean_name(label), "final": bool(FINAL_RE.match(label)),
+                                   "new_tab": bool(newt)})
+            if item.get("role") == "radio" and item.get("group"):
+                opts = [i["name"] for i in self.refs.values() if i.get("group") == item["group"]]
+                self._remember(item["group"], opts, label)
             if newt:
                 self.tab = newt
-                return "Nouvel onglet ouvert, tu es dessus maintenant.\n" + self.render(await newt.snapshot())
+                return "Nouvel onglet ouvert, tu es dessus maintenant.\n" + self._view(await newt.snapshot())
             await tab.wait_ready(10)
-            return "OK\n" + self.render(await tab.snapshot(), limit=6000)
+            return "OK\n" + self._view(await tab.snapshot(), limit=6000)
         if name == "type":
+            item = self.refs.get(a["ref"], {})
+            token = next((t for t in ("@@LETTRE@@", "@@MESSAGE@@") if t in a["text"]), None)
             text = a["text"].replace("@@LETTRE@@", self.files.get("lettre_txt", "")).replace(
                 "@@MESSAGE@@", self.files.get("message_court", ""))
             if self.files.get("no_semicolon"):
                 text = text.replace(";", ",")
             await tab.type(a["ref"], text, submit=a.get("submit", False))
+            if token:
+                self.trace.append({"a": "type", "name": item.get("name", ""), "text": token})
+            elif item.get("role", "").startswith(("textbox", "textarea", "combobox")) and len(text) < 300:
+                self._remember(item.get("name"), None, text)
             return "OK"
         if name == "select":
+            item = self.refs.get(a["ref"], {})
             r = await tab.select(a["ref"], a["option"])
+            if r and r.get("selected"):
+                self._remember(item.get("name"), item.get("options"), r["selected"])
             return json.dumps(r, ensure_ascii=False)
         if name == "check":
+            item = self.refs.get(a["ref"], {})
             await tab.check(a["ref"], a["checked"])
+            if item.get("role") == "radio" and a["checked"] and item.get("group"):
+                opts = [i["name"] for i in self.refs.values() if i.get("group") == item["group"]]
+                self._remember(item["group"], opts, item.get("name"))
             return "OK"
         if name == "upload":
+            item = self.refs.get(a["ref"], {})
             key = {"cv": "cv", "lettre": "lm", "certificats": "certs"}[a["file"]]
             path = self.files.get(key)
             if not path:
                 return f"fichier {a['file']} indisponible"
             await tab.upload(a["ref"], path)
+            self.trace.append({"a": "upload", "file": a["file"], "name": clean_name(item.get("name", ""))})
             return f"fichier {a['file']} envoyé"
         if name == "auto_fill":
             ctx = {"cv": self.files.get("cv"), "lm": self.files.get("lm"), "certs": self.files.get("certs"),
@@ -218,8 +258,9 @@ class Agent:
                 rep = await forms.auto_fill(tab, ctx, self.offer)
             except forms.NeedLogin:
                 return "Un mot de passe est demandé : utilise fill_credentials si des identifiants existent, sinon finish needs_login."
+            self.trace.append({"a": "auto_fill"})
             return (f"Rempli : {rep['filled'] or 'rien'}\nObligatoires sans réponse : {rep['unanswered_required'] or 'aucun'}\n"
-                    f"Ignorés : {rep['skipped'] or 'aucun'}\n\n" + self.render(await tab.snapshot(), limit=6000))
+                    f"Ignorés : {rep['skipped'] or 'aucun'}\n\n" + self._view(await tab.snapshot(), limit=6000))
         if name == "fill_credentials":
             url = await tab.url()
             host = re.sub(r"^https?://([^/]+).*", r"\1", url).lower()
@@ -242,7 +283,7 @@ class Agent:
             return "OK"
         if name == "navigate":
             await tab.goto(a["url"])
-            return self.render(await tab.snapshot(), limit=6000)
+            return self._view(await tab.snapshot(), limit=6000)
         if name == "tabs":
             ids = await self.browser.tab_ids()
             if a["action"] == "list":
@@ -250,7 +291,7 @@ class Agent:
             if a["action"] == "switch":
                 if 0 <= a.get("index", -1) < len(ids):
                     self.tab = Tab(self.browser, ids[a["index"]])
-                    return self.render(await self.tab.snapshot(), limit=6000)
+                    return self._view(await self.tab.snapshot(), limit=6000)
                 return "index invalide"
             if a["action"] == "close":
                 await tab.close()
@@ -271,90 +312,102 @@ class Agent:
             return "terminé"
         return "outil inconnu"
 
-    # ----------------------------------------------------------------------------- boucle
-    def _call(self, messages):
-        s = load_settings()
-        kw = dict(model=s.get("model", "claude-opus-5-5"), max_tokens=8000,
-                  system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
-                  tools=TOOLS, messages=messages, cache_control={"type": "ephemeral"},
-                  output_config={"effort": s.get("agent_effort", "low")})
-        betas = []
-        if self._flags["fallbacks"]:
-            betas.append("server-side-fallback-2026-07-01")
-            kw["fallbacks"] = "default"
-        if self._flags["ctx"]:
-            betas.append("context-management-2025-06-27")
-            kw["context_management"] = {"edits": [{"type": "clear_tool_uses_20250919"}]}
-        if betas:
-            kw["betas"] = betas
-        try:
-            return llm.client().beta.messages.create(**kw)
-        except anthropic.BadRequestError as e:
-            msg = str(e).lower()
-            if self._flags["fallbacks"] and "fallback" in msg:
-                self._flags["fallbacks"] = False
-                return self._call(messages)
-            if self._flags["ctx"] and any(k in msg for k in ("context_management", "context-management", "clear_tool")):
-                self._flags["ctx"] = False
-                return self._call(messages)
-            raise
+    # ------------------------------------------------------------------------- mémoire du site
+    def _save_recipe(self):
+        """Transforme les actions réussies en méthode rejouable : boutons d'ouverture, d'étape, d'envoi."""
+        key = self.recipe_key
+        if not key or not self.trace:
+            return
+        first_form = next((i for i, t in enumerate(self.trace) if t["a"] in ("auto_fill", "upload", "type")), len(self.trace))
+        opn = [t["name"] for t in self.trace[:first_form] if t["a"] == "click" and not t["final"]]
+        nxt = [t["name"] for t in self.trace[first_form:] if t["a"] == "click" and not t["final"]]
+        sub = [t["name"] for t in self.trace if t["a"] == "click" and t["final"]]
+        tokens = [[t["name"], t["text"]] for t in self.trace if t["a"] == "type"]
+        uploads = [[t["name"], t["file"]] for t in self.trace if t["a"] == "upload"]
+        m = db.method(key)
+        r = m.get("recipe") or {"open": [], "next": [], "submit": [], "tokens": [], "uploads": [], "ok": 0}
 
+        def merge(old, new):
+            out = list(old)
+            for x in new:
+                if x and x not in out:
+                    out.append(x)
+            return out[:8]
+        r["open"] = merge(opn, r["open"])
+        r["next"] = merge(r["next"], nxt)
+        r["submit"] = merge(r["submit"], sub)
+        r["tokens"] = merge(r["tokens"], tokens)
+        r["uploads"] = merge(r["uploads"], uploads)
+        r["ok"] = r.get("ok", 0) + 1
+        r["updated"] = db.now()
+        m["recipe"] = r
+        db.save_method(key, m)
+        log(f"méthode mémorisée pour {key} : ouvrir {r['open']}, étapes {r['next']}, envoi {r['submit']}")
+
+    # ----------------------------------------------------------------------------- boucle
     async def run(self, goal: str, max_steps: int | None = None) -> dict:
         s = load_settings()
         max_steps = max_steps or s.get("agent_max_steps", 40)
         notes = db.method(self.site).get("notes", [])
         hint = SITE_HINTS.get(self.site, "")
+        recipe = db.method(self.recipe_key).get("recipe") if self.recipe_key else None
         first = await self.tab.snapshot()
+        if self.recipe_key and self.offer.get("_start_url") is None:
+            self.offer["_start_url"] = first.get("url")
         intro = (f"TÂCHE : {goal}\n\n"
                  + (f"Méthode connue pour ce site : {hint}\n" if hint else "")
+                 + (f"Méthode mémorisée (boutons) : ouvrir {recipe['open']}, étapes {recipe['next']}, envoi {recipe['submit']}\n"
+                    if recipe else "")
                  + ("Notes des passages précédents :\n- " + "\n- ".join(notes[-6:]) + "\n" if notes else "")
+                 + (self.extra_intro + "\n" if self.extra_intro else "")
                  + ("MODE VALIDATION : remplis tout mais ne clique PAS l'envoi final ; appelle finish(status='ready').\n"
                     if not self.auto else "")
-                 + "\nPage actuelle :\n" + self.render(first))
-        messages = [{"role": "user", "content": intro}]
+                 + "\nPage actuelle :\n" + self._view(first))
+        conv = providers.ToolConversation(SYSTEM, TOOLS, effort=s.get("agent_effort", "low"))
+        conv.user(intro)
         t0 = time.time()
         nudged = False
+        errors = 0
         while self.steps < max_steps and self.result is None:
             self.steps += 1
             try:
-                resp = await asyncio.to_thread(self._call, messages)
-            except anthropic.AuthenticationError:
-                return {"status": "error", "reason": "clé API Anthropic invalide"}
-            except anthropic.APIError as e:
-                log(f"API Claude : {e.__class__.__name__}")
+                st = await asyncio.to_thread(conv.step)
+            except Exception as e:
+                errors += 1
+                log(f"IA ({conv.provider}) : {e.__class__.__name__} {str(e)[:120]}")
+                if errors >= 3 or "refusée" in str(e) or e.__class__.__name__ == "AuthenticationError":
+                    return {"status": "error", "reason": f"fournisseur d'IA : {e.__class__.__name__}", "steps": self.steps}
                 await asyncio.sleep(5)
                 continue
-            messages.append({"role": "assistant", "content": resp.content})
-            if resp.stop_reason == "refusal":
-                return {"status": "blocked", "reason": "requête déclinée par le modèle"}
-            uses = [b for b in resp.content if b.type == "tool_use"]
-            if not uses:
+            if st.refusal:
+                return {"status": "blocked", "reason": "requête déclinée par le modèle", "steps": self.steps}
+            if not st.calls:
                 if nudged:
                     break
                 nudged = True
-                messages.append({"role": "user", "content": "Continue avec les outils, puis appelle finish."})
+                conv.user("Continue avec les outils, puis appelle finish.")
                 continue
             results = []
-            for b in uses:
+            for c in st.calls:
                 try:
-                    out = await self.run_tool(b.name, b.input)
+                    out = await self.run_tool(c.name, c.input)
                     err = False
                 except (BrowserError, forms.Blocked) as e:
                     out, err = f"Erreur : {e}", True
                 except Exception as e:
                     out, err = f"Erreur : {e.__class__.__name__} {e}"[:300], True
-                results.append({"type": "tool_result", "tool_use_id": b.id, "content": out, "is_error": err})
-                if b.name == "finish":
+                results.append({"id": c.id, "content": out, "is_error": err})
+                if c.name == "finish":
                     break
-            # chaque tool_use reçoit un résultat, même après finish
-            done_ids = {r["tool_use_id"] for r in results}
-            for b in uses:
-                if b.id not in done_ids:
-                    results.append({"type": "tool_result", "tool_use_id": b.id, "content": "ignoré (tâche terminée)"})
-            messages.append({"role": "user", "content": results})
+            done = {r["id"] for r in results}
+            results += [{"id": c.id, "content": "ignoré (tâche terminée)"} for c in st.calls if c.id not in done]
+            conv.results(results)
         res = self.result or {"status": "blocked", "reason": f"pas terminé en {self.steps} étapes", "method_note": ""}
         res["steps"] = self.steps
         res["seconds"] = round(time.time() - t0)
+        res["provider"] = conv.provider
+        if res["status"] in ("applied",) or (res["status"] == "ready" and not self.auto):
+            self._save_recipe()
         note = (res.get("method_note") or "").strip()
         if note:
             m = db.method(self.site)

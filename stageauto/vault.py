@@ -105,3 +105,11 @@ def import_proton_csv(path: str, delete_after: bool = True) -> dict:
         except OSError:
             pass
     return {"imported": done, "ignored": other}
+
+
+def get_foreign_key():
+    return _get("foreign_api_key")
+
+
+def set_foreign_key(v):
+    _set("foreign_api_key", v or None)

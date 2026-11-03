@@ -14,9 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import anthropic
-
-from . import llm
+from . import llm, providers
 from .config import IS_WIN, SKILL_DIR, WORK, load_settings
 from .gen import generator
 from .notify import log
@@ -64,32 +62,11 @@ def _system():
 _SYS = None
 
 
-def _ask(messages):
+def _conversation():
     global _SYS
     _SYS = _SYS or _system()
-    s = load_settings()
-    kw = dict(model=s.get("model", "claude-opus-5-5"), max_tokens=32000,
-              system=[{"type": "text", "text": _SYS, "cache_control": {"type": "ephemeral"}}],
-              messages=messages, output_config={"effort": s.get("cv_effort", "medium"),
-                                                "format": {"type": "json_schema", "schema": SCHEMA}},
-              betas=["server-side-fallback-2026-07-01"], fallbacks="default")
-    try:
-        with llm.client().beta.messages.stream(**kw) as st:
-            m = st.get_final_message()
-    except anthropic.BadRequestError as e:
-        if "fallback" not in str(e).lower():
-            raise
-        kw.pop("betas")
-        kw.pop("fallbacks")
-        with llm.client().messages.stream(**kw) as st:
-            m = st.get_final_message()
-    if m.stop_reason == "refusal":
-        return m, None
-    txt = "".join(b.text for b in m.content if b.type == "text")
-    try:
-        return m, json.loads(txt)
-    except json.JSONDecodeError:
-        return m, None
+    return providers.JsonConversation(_SYS, SCHEMA, max_tokens=32000, effort=load_settings().get("cv_effort", "medium"),
+                                      name="candidature")
 
 
 def _tools_ok():
@@ -169,11 +146,9 @@ def generate(offer: dict) -> dict:
     """Renvoie {ok, eligible, reason, cv, lm, lettre_txt, message_court, poste, dossier, lang, warnings}."""
     user = (f"OFFRE (source : {offer.get('site')}, URL : {offer.get('url')})\nEntreprise : {offer.get('company')}\n"
             f"Intitulé : {offer.get('title')}\nLieu : {offer.get('location')}\n\n{(offer.get('description') or '')[:14000]}")
-    messages = [{"role": "user", "content": user}]
+    conv = _conversation()
     try:
-        m, d = _ask(messages)
-    except anthropic.AuthenticationError:
-        raise
+        d = conv.ask(user)
     except Exception as e:
         log(f"skill CV : {e.__class__.__name__} {str(e)[:120]}")
         return _fallback(offer, f"skill indisponible ({e.__class__.__name__})")
@@ -193,11 +168,9 @@ def generate(offer: dict) -> dict:
             break
         log(f"build {dossier} : erreurs ({'tentative ' + str(attempt + 1)})")
         if attempt == 0:
-            messages += [{"role": "assistant", "content": m.content},
-                         {"role": "user", "content": "build.py signale ces erreurs. Corrige-les en une fois et renvoie "
-                                                     f"l'objet complet (mêmes champs) :\n{errs}"}]
             try:
-                m, d2 = _ask(messages)
+                d2 = conv.ask("build.py signale ces erreurs. Corrige-les en une fois et renvoie l'objet complet "
+                              f"(mêmes champs) :\n{errs}")
             except Exception as e:
                 log(f"correction : {e.__class__.__name__}")
                 d2 = None
@@ -230,17 +203,21 @@ def generate(offer: dict) -> dict:
 
 def _fallback(offer, why):
     log(f"repli modèles : {why}")
-    t = llm.tailor(offer)
+    try:
+        t = llm.tailor(offer)
+    except Exception as e:
+        return {"ok": False, "eligible": False, "reason": f"{why} ; adaptation impossible ({e.__class__.__name__})"}
     if t is None:
         return {"ok": False, "eligible": False, "reason": why}
-    if not t.eligible:
-        return {"ok": False, "eligible": False, "reason": t.reason}
-    o = t.model_dump()
-    dossier = generator.slug(t.e) + "_" + generator.slug(t.s)
+    if not t.get("eligible"):
+        return {"ok": False, "eligible": False, "reason": t.get("reason", "non éligible")}
+    o = t
+    dossier = generator.slug(t["e"]) + "_" + generator.slug(t["s"])
     r = generator.generate(o, WORK / dossier / "out", english_rules=(SKILL / "references" / "english.md").read_text(encoding="utf-8"),
                            translate=llm.translate_tex)
     if not r.get("ok"):
         return {"ok": False, "eligible": True, "reason": r.get("error", "génération impossible")}
-    r.update({"eligible": True, "message_court": t.message_court, "poste": t.poste, "dossier": dossier, "lang": t.lang,
-              "company": t.e, "ville": t.ville, "recruteur": t.recruteur, "warnings": r.get("warnings", []) + [why]})
+    r.update({"eligible": True, "message_court": t.get("message_court", ""), "poste": t.get("poste"), "dossier": dossier,
+              "lang": t.get("lang"), "company": t.get("e"), "ville": t.get("ville"), "recruteur": t.get("recruteur"),
+              "warnings": r.get("warnings", []) + [why]})
     return r

@@ -12,6 +12,7 @@ import base64
 import itertools
 import json
 import mimetypes
+import random
 import re
 import time
 from pathlib import Path
@@ -184,10 +185,57 @@ KEYS = {"Enter": (13, "\r"), "Tab": (9, ""), "Escape": (27, ""), "Backspace": (8
 
 
 # ------------------------------------------------------------------------------------------- Tab
+CURSOR_JS = r"""
+(p) => { const d = document; let c = d.getElementById('__sa_cursor');
+  if (!c) { c = d.createElement('div'); c.id = '__sa_cursor';
+    c.style.cssText = 'position:fixed;left:0;top:0;width:22px;height:22px;z-index:2147483647;pointer-events:none;will-change:transform';
+    c.innerHTML = '<svg width="22" height="22" viewBox="0 0 22 22"><path d="M2 2 L2 18 L7 13.5 L10.5 20.5 L13.5 19 L10 12 L17 12 Z" fill="#1f7a4d" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+    (d.body || d.documentElement).appendChild(c); }
+  c.style.transform = `translate(${p.x - 2}px, ${p.y - 2}px)`;
+  if (p.click) { const r = d.createElement('div');
+    r.style.cssText = `position:fixed;left:${p.x - 12}px;top:${p.y - 12}px;width:24px;height:24px;border-radius:50%;border:2px solid #1f7a4d;z-index:2147483646;pointer-events:none;transition:transform .45s,opacity .45s`;
+    d.documentElement.appendChild(r); requestAnimationFrame(() => { r.style.transform = 'scale(1.9)'; r.style.opacity = '0'; });
+    setTimeout(() => r.remove(), 500); } }
+"""
+
+
+def _bezier(p0, p3, n):
+    """Trajectoire courbe et naturelle entre deux points (courbe de Bézier cubique, vitesse en cloche)."""
+    (x0, y0), (x3, y3) = p0, p3
+    dx, dy = x3 - x0, y3 - y0
+    dist = max(1.0, (dx * dx + dy * dy) ** 0.5)
+    nx, ny = -dy / dist, dx / dist
+    b1, b2 = random.uniform(-0.25, 0.25) * dist, random.uniform(-0.25, 0.25) * dist
+    x1, y1 = x0 + dx * 0.3 + nx * b1, y0 + dy * 0.3 + ny * b1
+    x2, y2 = x0 + dx * 0.7 + nx * b2, y0 + dy * 0.7 + ny * b2
+    pts = []
+    for i in range(1, n + 1):
+        t = i / n
+        t = t * t * (3 - 2 * t)  # accélération puis freinage
+        u = 1 - t
+        pts.append((u ** 3 * x0 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t ** 3 * x3,
+                    u ** 3 * y0 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t ** 3 * y3))
+    return pts
+
+
 class Tab:
     def __init__(self, browser, tid):
         self.browser = browser
         self.id = tid
+        self.last_url = ""
+        self.pos = (random.uniform(200, 600), random.uniform(150, 400))
+
+    def human(self) -> bool:
+        """Souris et clavier « humains » : sur LinkedIn par défaut (réglage human_mode : linkedin / all / off)."""
+        mode = load_settings().get("human_mode", "linkedin")
+        return mode == "all" or (mode == "linkedin" and "linkedin.com" in (self.last_url or ""))
+
+    async def _cursor(self, x, y, click=False):
+        if load_settings().get("show_cursor", True):
+            try:
+                await self.eval(CURSOR_JS, {"x": x, "y": y, "click": click}, timeout=5)
+            except Exception:
+                pass
 
     async def send(self, method, params=None):
         return await self.browser.cdp(self.id, method, params or {})
@@ -217,6 +265,7 @@ class Tab:
         return False
 
     async def goto(self, url, timeout=40):
+        self.last_url = url
         r = await self.send("Page.navigate", {"url": url})
         if r.get("errorText"):
             log(f"navigation : {r['errorText']} ({url[:70]})")
@@ -233,14 +282,35 @@ class Tab:
         return (await self.eval("(s) => { const e = document.querySelector(s); return e ? e.innerText : '' }", sel) or "")[:limit]
 
     async def snapshot(self, **opts):
-        return await self.eval(SNAP_JS, opts)
+        snap = await self.eval(SNAP_JS, opts)
+        if snap and snap.get("url"):
+            self.last_url = snap["url"]
+        return snap
+
+    async def move(self, x, y):
+        """Déplacement de la souris : trajectoire courbe à vitesse variable en mode humain, direct sinon."""
+        if self.human():
+            dist = ((x - self.pos[0]) ** 2 + (y - self.pos[1]) ** 2) ** 0.5
+            n = int(min(38, max(10, dist / 22)))
+            total = min(0.95, 0.22 + dist / 1600) * random.uniform(0.85, 1.2)
+            for i, (px, py) in enumerate(_bezier(self.pos, (x, y), n)):
+                await self.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": px, "y": py})
+                if i % 3 == 0 or i == n - 1:
+                    await self._cursor(px, py)
+                await asyncio.sleep(total / n)
+        else:
+            await self.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+            await self._cursor(x, y)
+        self.pos = (x, y)
 
     async def _mouse(self, x, y, clicks=1):
-        await self.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
-        await asyncio.sleep(0.05)
-        for t in ("mousePressed", "mouseReleased"):
-            await self.send("Input.dispatchMouseEvent", {"type": t, "x": x, "y": y, "button": "left", "clickCount": clicks})
-            await asyncio.sleep(0.04)
+        human = self.human()
+        await self.move(x, y)
+        await asyncio.sleep(random.uniform(0.08, 0.22) if human else 0.05)
+        await self.send("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": clicks})
+        await asyncio.sleep(random.uniform(0.05, 0.13) if human else 0.04)
+        await self.send("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": clicks})
+        await self._cursor(x, y, click=True)
 
     async def click(self, ref):
         r = await self.eval(RECT_JS, ref)
@@ -248,15 +318,44 @@ class Tab:
             raise BrowserError((r or {}).get("error", "élément introuvable"))
         if r["type"] == "file":
             raise BrowserError("champ fichier : utilise upload")
+        x, y = r["x"], r["y"]
+        if self.human():  # point de clic naturel dans la zone centrale de l'élément, pas au pixel près
+            x += random.uniform(-0.22, 0.22) * min(r["w"], 160)
+            y += random.uniform(-0.2, 0.2) * min(r["h"], 40)
         await asyncio.sleep(0.15)
-        await self._mouse(r["x"], r["y"])
+        await self._mouse(x, y)
         return r
 
+    async def _type_human(self, text):
+        """Frappe caractère par caractère, rythme irrégulier ; les textes longs sont saisis par petits blocs."""
+        if len(text) > 700:
+            for i in range(0, len(text), 40):
+                await self.send("Input.insertText", {"text": text[i:i + 40]})
+                await asyncio.sleep(random.uniform(0.05, 0.15))
+            return
+        for ch in text:
+            if ch == "\n":  # saut de ligne inséré sans touche Entrée (qui enverrait un message LinkedIn)
+                await self.send("Input.insertText", {"text": "\n"})
+            else:
+                await self.send("Input.dispatchKeyEvent", {"type": "keyDown", "text": ch, "key": ch, "unmodifiedText": ch})
+                await self.send("Input.dispatchKeyEvent", {"type": "keyUp", "key": ch})
+            d = random.uniform(0.035, 0.11)
+            if ch in " ,.;:" and random.random() < 0.25:
+                d += random.uniform(0.1, 0.35)
+            await asyncio.sleep(d)
+
     async def type(self, ref, text, submit=False):
+        if self.human():  # clic dans le champ avant de taper, comme une personne
+            try:
+                await self.click(ref)
+            except BrowserError:
+                pass
         f = await self.eval(FOCUS_JS, ref)
         if not f or f.get("error"):
             raise BrowserError((f or {}).get("error", "élément introuvable"))
-        if text:
+        if text and self.human():
+            await self._type_human(text)
+        elif text:
             await self.send("Input.insertText", {"text": text})
         else:
             await self.press("Backspace")
@@ -310,6 +409,15 @@ class Tab:
         await self.send("Input.dispatchKeyEvent", {"type": "keyUp", **base})
 
     async def scroll(self, dy=600):
+        if self.human():  # molette, par crans
+            vp = await self.eval("({w: innerWidth, h: innerHeight})")
+            x, y = vp["w"] * random.uniform(0.4, 0.6), vp["h"] * random.uniform(0.4, 0.6)
+            await self.move(x, y)
+            for _ in range(max(1, abs(dy) // 120)):
+                await self.send("Input.dispatchMouseEvent", {"type": "mouseWheel", "x": x, "y": y, "deltaX": 0,
+                                                             "deltaY": 120 if dy > 0 else -120})
+                await asyncio.sleep(random.uniform(0.06, 0.16))
+            return
         await self.eval("(dy) => { const d = [...document.querySelectorAll('[role=dialog], [aria-modal=true]')].pop();"
                         " const s = d ? ([...d.querySelectorAll('*')].find(e => e.scrollHeight > e.clientHeight + 20 &&"
                         " /auto|scroll/.test(getComputedStyle(e).overflowY)) || d) : null;"

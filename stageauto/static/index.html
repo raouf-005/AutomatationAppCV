@@ -63,9 +63,10 @@ a{color:var(--accent)}
     <section class="card">
       <h2>Connexions</h2>
       <div class="row"><span class="dot" id="extdot"></span><span class="grow">Extension Chrome (ton Chrome)</span><span class="muted" id="exttxt"></span></div>
-      <div class="row"><span class="dot" id="keydot"></span><span class="grow">Clé API Claude</span><span class="muted" id="keytxt"></span></div>
+      <div class="row"><span class="dot" id="keydot"></span><span class="grow">IA : <span id="provtxt"></span></span><span class="muted" id="keytxt"></span></div>
       <div id="conns"></div>
-      <div style="margin-top:8px"><button onclick="api('/api/check_connections','POST')">Vérifier les connexions</button></div>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button onclick="api('/api/check_connections','POST')">Vérifier les connexions</button>
+        <button onclick="api('/api/test_linkedin','POST')" title="Ouvre LinkedIn dans ton Chrome, cherche les offres, lit une offre et laisse l'agent remplir la Candidature simplifiée. S'arrête avant l'envoi.">Tester LinkedIn (sans rien envoyer)</button></div>
     </section>
   </div>
   <section class="card" id="reviewcard" hidden>
@@ -74,7 +75,7 @@ a{color:var(--accent)}
   <section class="card">
     <nav class="tabs" id="tabs">
       <button data-t="offres" class="on">Offres</button><button data-t="contacts">Contacts LinkedIn</button>
-      <button data-t="journal">Journal</button><button data-t="notes">Méthodes apprises</button><button data-t="reglages">Réglages</button>
+      <button data-t="journal">Journal</button><button data-t="notes">Mémoire et apprentissage</button><button data-t="reglages">Réglages</button>
     </nav>
     <div data-p="offres">
       <div class="row" style="border:0"><select id="ofilter" style="max-width:240px" onchange="loadOffers()">
@@ -84,13 +85,34 @@ a{color:var(--accent)}
     </div>
     <div data-p="contacts" hidden><div class="tablewrap"><table><thead><tr><th>Date</th><th>Entreprise</th><th>Personne</th><th>Rôle</th><th>Statut</th></tr></thead><tbody id="ctable"></tbody></table></div></div>
     <div data-p="journal" hidden><pre class="log" id="log"></pre><p class="muted" id="summary"></p></div>
-    <div data-p="notes" hidden><div id="notes" class="muted">…</div></div>
+    <div data-p="notes" hidden>
+      <h2>Courbe d'apprentissage</h2>
+      <p class="muted">Chaque candidature réussie mémorise la méthode du site ; les suivantes la rejouent sans IA quand c'est possible.</p>
+      <div class="tablewrap"><table><thead><tr><th>Site</th><th>Candidatures</th><th>Réussies</th><th>Temps moyen (5 premières → 5 dernières)</th>
+        <th>Étapes IA (5 premières → 5 dernières)</th><th>Rejouées sans IA</th></tr></thead><tbody id="curve"></tbody></table></div>
+      <h2 style="margin-top:16px">Méthodes mémorisées</h2><div id="recipes" class="muted"></div>
+      <h2 style="margin-top:16px">Réponses apprises (formulaires)</h2>
+      <div class="tablewrap"><table><thead><tr><th>Question</th><th>Réponse</th><th>Origine</th><th>Utilisée</th></tr></thead><tbody id="answers"></tbody></table></div>
+      <h2 style="margin-top:16px">Notes de l'agent</h2><div id="notes" class="muted">…</div>
+    </div>
     <div data-p="reglages" hidden>
       <div class="grid">
         <div>
           <h2>Clé API Claude</h2>
           <label class="f">Clé (stockée dans le Gestionnaire d'identification Windows)<input type="password" id="apikey" placeholder="sk-ant-…"></label>
           <button onclick="saveKey()">Enregistrer la clé</button>
+          <h2 style="margin-top:18px">Fournisseur d'IA</h2>
+          <label class="f">Fournisseur principal<select id="s_llm_provider"><option value="anthropic">Claude (Anthropic)</option>
+            <option value="openai_compatible">Autre fournisseur, ta clé (compatible OpenAI)</option></select></label>
+          <label class="f">Service<select id="s_foreign_preset"><option value="openai">OpenAI</option><option value="mistral">Mistral</option>
+            <option value="gemini">Google Gemini</option><option value="deepseek">DeepSeek</option><option value="openrouter">OpenRouter</option>
+            <option value="groq">Groq</option><option value="">Autre (URL ci-dessous)</option></select></label>
+          <label class="f">URL de l'API (facultatif, remplace le service)<input type="text" id="s_foreign_base_url" placeholder="https://…/v1"></label>
+          <label class="f">Modèle (nom exact chez le fournisseur)<input type="text" id="s_foreign_model"></label>
+          <label class="f">Clé API du fournisseur externe<input type="password" id="foreignkey" placeholder="clé…"></label>
+          <button onclick="saveForeignKey()">Enregistrer la clé externe</button>
+          <label class="f"><span><input type="checkbox" id="s_llm_fallback"> Si le fournisseur principal échoue, utiliser l'autre</span></label>
+          <p class="muted">Pense à cliquer « Enregistrer les réglages » pour le fournisseur et le modèle.</p>
           <h2 style="margin-top:18px">Identifiants des sites</h2>
           <p class="muted">Importer un export CSV d'un coffre Proton Pass contenant uniquement les sites d'emploi (le fichier est supprimé après import). Les mots de passe ne sont jamais montrés à Claude.</p>
           <input type="file" id="proton" accept=".csv"> <button onclick="importProton()">Importer Proton Pass</button>
@@ -109,6 +131,10 @@ a{color:var(--accent)}
           <label class="f">Max par entreprise et par jour<input type="number" id="s_max_per_company_per_day"></label>
           <label class="f">Invitations LinkedIn / jour<input type="number" id="s_max_invites_per_day"></label>
           <label class="f">InMails / jour<input type="number" id="s_max_inmails_per_day"></label>
+          <label class="f"><span><input type="checkbox" id="s_use_memory"> Rejouer les méthodes mémorisées avant d'appeler l'IA</span></label>
+          <label class="f"><span><input type="checkbox" id="s_linkedin_real_chrome_only"> LinkedIn uniquement via mon vrai Chrome</span></label>
+          <label class="f">Souris et clavier humains<select id="s_human_mode"><option value="linkedin">Sur LinkedIn</option><option value="all">Partout</option><option value="off">Jamais (plus rapide)</option></select></label>
+          <label class="f"><span><input type="checkbox" id="s_show_cursor"> Afficher le curseur dans la page pendant que l'application agit</span></label>
           <label class="f">Effort de l'agent (low = rapide et économique)<select id="s_agent_effort"><option>low</option><option>medium</option><option>high</option></select></label>
           <label class="f">Sujet ntfy.sh pour les notifications téléphone (facultatif)<input type="text" id="s_ntfy_topic"></label>
           <label class="f">Index du compte Gmail dans Chrome (u/0, u/1…)<input type="number" id="s_gmail_index"></label>
@@ -140,7 +166,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('on', x === b));
   document.querySelectorAll('[data-p]').forEach(p => p.hidden = p.dataset.p !== b.dataset.t);
   if (b.dataset.t === 'offres') loadOffers(); if (b.dataset.t === 'contacts') loadContacts();
-  if (b.dataset.t === 'notes') loadNotes(); if (b.dataset.t === 'reglages') loadSettings();
+  if (b.dataset.t === 'notes') { loadNotes(); loadLearning(); } if (b.dataset.t === 'reglages') loadSettings();
 });
 function pdfLinks(folder) { return folder ? `<a href="/files?path=${encodeURIComponent(folder)}" target="_blank" title="${esc(folder)}">dossier</a>` : ''; }
 async function refresh() {
@@ -151,7 +177,10 @@ async function refresh() {
   $('#runbtn').disabled = st.running;
   $('#extdot').className = 'dot ' + (d.extension ? 'ok' : (d.backend === 'extension' ? 'bad' : ''));
   $('#exttxt').textContent = d.extension ? 'connectée' : (d.backend === 'extension' ? 'non connectée' : 'non utilisée');
-  $('#keydot').className = 'dot ' + (d.api_key ? 'ok' : 'bad'); $('#keytxt').textContent = d.api_key ? 'enregistrée' : 'à ajouter (Réglages)';
+  const foreign = d.provider === 'openai_compatible';
+  $('#provtxt').textContent = foreign ? 'fournisseur externe (clé personnelle)' : 'Claude';
+  const keyok = foreign ? d.foreign_key : d.api_key;
+  $('#keydot').className = 'dot ' + (keyok ? 'ok' : 'bad'); $('#keytxt').textContent = keyok ? 'clé enregistrée' : 'clé à ajouter (Réglages)';
   $('#conns').innerHTML = Object.entries(d.sites).map(([k, n]) => {
     const c = st.connections[k]; const cls = c === true ? 'ok' : c === false ? 'bad' : '';
     return `<div class="row"><span class="dot ${cls}"></span><span class="grow">${esc(n)}${d.creds[k] ? ' <span class="muted">(identifiants enregistrés)</span>' : ''}</span>
@@ -182,6 +211,17 @@ async function loadOffers() {
 async function loadContacts() {
   const rows = await api('/api/contacts') || [];
   $('#ctable').innerHTML = rows.map(c => `<tr><td>${esc(c.date)}</td><td>${esc(c.company)}</td><td>${c.profile_url ? `<a href="${esc(c.profile_url)}" target="_blank">${esc(c.name)}</a>` : esc(c.name)}</td><td class="muted">${esc(c.role)}</td><td>${esc(c.status)}</td></tr>`).join('');
+}
+async function loadLearning() {
+  const L = await api('/api/learning') || {curve: [], recipes: {}, answers: []};
+  const arrow = (a, b) => a == null ? '—' : `${a} → <b>${b}</b>`;
+  $('#curve').innerHTML = L.curve.map(c => `<tr><td>${esc(SITES[c.site] || c.site)}</td><td>${c.n}</td><td>${c.ok}</td>
+    <td>${arrow(c.first5, c.last5)} s</td><td>${arrow(c.llm_steps_first5, c.llm_steps_last5)}</td><td>${c.replay_share} %</td></tr>`).join('')
+    || '<tr><td colspan="6" class="muted">Pas encore de candidature.</td></tr>';
+  $('#recipes').innerHTML = Object.entries(L.recipes).filter(([, r]) => r).map(([k, r]) => `<div class="row" style="display:block"><b>${esc(k)}</b>
+    <span class="muted">(${r.ok || 0} réussite(s), ${r.fallbacks || 0} reprise(s) par l'IA)</span><br>ouvrir : ${esc((r.open || []).join(' › ') || '—')} ·
+    étapes : ${esc((r.next || []).join(' › ') || '—')} · envoi : ${esc((r.submit || []).join(' / ') || '—')}</div>`).join('') || 'Aucune méthode mémorisée.';
+  $('#answers').innerHTML = L.answers.map(a => `<tr><td>${esc(a.question)}</td><td>${esc(a.answer)}</td><td class="muted">${esc(a.source)}</td><td>${a.uses}</td></tr>`).join('');
 }
 async function loadNotes() {
   const n = await api('/api/notes') || {};
@@ -220,6 +260,7 @@ async function saveSettings() {
   await api('/api/settings', 'POST', b); loadSettings();
 }
 async function saveKey() { const r = await api('/api/apikey', 'POST', {key: $('#apikey').value}); $('#apikey').value = ''; alert(r && r.ok ? 'Clé enregistrée' : 'Clé supprimée'); }
+async function saveForeignKey() { const r = await api('/api/foreign_key', 'POST', {key: $('#foreignkey').value}); $('#foreignkey').value = ''; alert(r && r.ok ? 'Clé externe enregistrée' : 'Clé externe supprimée'); }
 async function saveCred() {
   await api('/api/cred', 'POST', {site: $('#credsite').value, user: $('#creduser').value, password: $('#credpwd').value});
   $('#creduser').value = $('#credpwd').value = ''; loadSettings();

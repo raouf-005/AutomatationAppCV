@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS answers(qkey TEXT PRIMARY KEY, question TEXT, answer 
 CREATE TABLE IF NOT EXISTS methods(site TEXT PRIMARY KEY, data TEXT);
 CREATE TABLE IF NOT EXISTS hosts(host TEXT PRIMARY KEY, verdict TEXT, note TEXT, updated TEXT);
 CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY AUTOINCREMENT, started TEXT, ended TEXT, summary TEXT);
+CREATE TABLE IF NOT EXISTS apply_stats(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, site TEXT, rkey TEXT, mode TEXT,
+  seconds REAL, llm_steps INTEGER, status TEXT, provider TEXT);
 CREATE TABLE IF NOT EXISTS pending(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, site TEXT, key TEXT, note TEXT, created TEXT);
 """
 with _lock:
@@ -228,3 +230,30 @@ def import_seed() -> int:
             add_contact("", "", name[0], "", "https://www.linkedin.com/in/" + name[1], "HISTORIQUE", "", "seed")
     save_method("_seed", {"done": now(), "n": n})
     return n
+
+
+# ---------- courbe d'apprentissage ----------
+def record_apply(site, rkey, mode, seconds, llm_steps, status, provider=""):
+    x("INSERT INTO apply_stats(ts,site,rkey,mode,seconds,llm_steps,status,provider) VALUES(?,?,?,?,?,?,?,?)",
+      (now(), site, rkey, mode, seconds, llm_steps, status, provider))
+
+
+def learning_curve():
+    """Par site : candidatures, réussite, temps moyen des 5 premières vs 5 dernières, part rejouée sans IA."""
+    out = {}
+    for r in q("SELECT * FROM apply_stats ORDER BY id"):
+        d = out.setdefault(r["site"], {"runs": []})
+        d["runs"].append(r)
+    res = []
+    for site, d in out.items():
+        runs = d["runs"]
+        ok = [r for r in runs if r["status"] in ("applied", "ready")]
+        secs = [r["seconds"] or 0 for r in ok]
+        avg = lambda a: round(sum(a) / len(a)) if a else None  # noqa: E731
+        res.append({"site": site, "n": len(runs), "ok": len(ok),
+                    "first5": avg(secs[:5]), "last5": avg(secs[-5:]),
+                    "replay_share": round(100 * sum(1 for r in ok if r["mode"] == "replay") / len(ok)) if ok else 0,
+                    "llm_steps_first5": avg([r["llm_steps"] or 0 for r in ok[:5]]),
+                    "llm_steps_last5": avg([r["llm_steps"] or 0 for r in ok[-5:]]),
+                    "last": [{"s": r["seconds"], "m": r["mode"]} for r in ok[-20:]]})
+    return sorted(res, key=lambda r: -r["n"])

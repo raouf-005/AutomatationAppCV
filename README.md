@@ -41,6 +41,39 @@ Application Windows qui fait, deux fois par jour, la routine de candidature de s
   Tu valides ensuite chaque candidature d'un clic dans le tableau de bord.
 - Les PDF envoyés sont copiés dans `Downloads\Candidatures\envoyees\<Entreprise_Sujet>\`.
 
+## Mémoire des sites et courbe d'apprentissage
+
+- Après chaque candidature réussie, l'application **mémorise la méthode du site** : boutons pour ouvrir le formulaire
+  (« Candidature simplifiée »…), boutons d'étape (« Suivant », « Vérifier »…), bouton d'envoi et champs de texte.
+  La clé est le site plus l'adresse du formulaire.
+- Pour l'offre suivante sur ce site, elle **rejoue cette méthode sans IA** : remplissage automatique, étapes, envoi,
+  puis vérification de la confirmation. À la première surprise (question inconnue, bouton absent, erreur affichée),
+  l'agent reprend la main sur la page en l'état et complète la méthode.
+- Les **réponses données par l'agent** aux questions des formulaires sont mémorisées et remplies d'office ensuite.
+- L'onglet **Mémoire et apprentissage** montre, par site : le nombre de candidatures, le temps moyen des 5 premières puis
+  des 5 dernières, le nombre d'étapes d'IA et la part rejouée sans IA. On y voit aussi les méthodes, les réponses apprises
+  et les notes de l'agent.
+
+## Fournisseur d'IA : Claude ou ta propre clé
+
+Par défaut, l'application utilise Claude. Dans **Réglages → Fournisseur d'IA**, tu peux choisir un autre service
+compatible OpenAI avec ta clé : OpenAI, Mistral, Google Gemini, DeepSeek, OpenRouter, Groq, ou une URL libre. Indique
+le nom exact du modèle chez ce fournisseur. Avec « Si le fournisseur principal échoue, utiliser l'autre », l'autre
+service prend le relais si une clé est refusée, si le crédit est épuisé ou si le service est indisponible. La qualité
+des CV et de l'agent dépend du modèle choisi.
+
+## LinkedIn : uniquement ton vrai Chrome, souris et clavier humains
+
+- LinkedIn ne passe **que par ton Chrome habituel**, avec l'extension. Si elle n'est pas connectée, LinkedIn est
+  ignoré : jamais de navigateur de secours pour LinkedIn.
+- Sur LinkedIn, la souris suit des **trajectoires courbes** à vitesse variable et clique dans la zone centrale du bouton,
+  pas au pixel près. Le clavier tape **caractère par caractère**, avec un rythme irrégulier et des pauses. La molette
+  défile par crans.
+- Un **curseur vert** visible dans la page montre où l'application agit, avec un cercle à chaque clic.
+- **Tester LinkedIn (sans rien envoyer)** (carte Connexions) : connexion, recherche des offres, lecture d'une offre,
+  remplissage de la Candidature simplifiée sous tes yeux, puis arrêt avant « Envoyer la candidature ».
+- Réglages : « Souris et clavier humains » (LinkedIn / partout / jamais) et « Afficher le curseur ».
+
 ## Comment ça marche
 
 | Étape | Méthode | Coût Claude |
@@ -89,7 +122,9 @@ Application Windows qui fait, deux fois par jour, la routine de candidature de s
 ```
 extension/            extension Chrome StageAuto Bridge (MV3, chrome.debugger)
 stageauto/
-  cdp.py              couche navigateur (extension ou Playwright), clics/saisie réels, instantané de page avec références
+  cdp.py              couche navigateur (extension ou Playwright), souris/clavier humains, curseur visible, instantané de page
+  providers.py        fournisseurs d'IA : Claude ou service compatible OpenAI (clé personnelle), relais automatique
+  replay.py           relecture des méthodes mémorisées sans IA
   agent.py            agent Claude (outils read_page, find, click, type, upload, auto_fill, fill_credentials, finish…)
   forms.py            réponses autorisées, remplissage automatique, détection des questions interdites
   cvskill.py          CV + lettre via le skill (SKILL.md + profil.md), build.py, correction, repli modèles
