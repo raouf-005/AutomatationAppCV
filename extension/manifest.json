@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "StageAuto Bridge",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Relie ton Chrome à l'application StageAuto (127.0.0.1) pour qu'elle postule avec tes sessions déjà ouvertes.",
   "permissions": ["debugger", "tabs", "windows", "alarms", "storage"],
   "background": {"service_worker": "background.js"},

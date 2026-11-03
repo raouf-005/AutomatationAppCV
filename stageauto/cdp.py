@@ -537,6 +537,11 @@ class ExtensionBridge:
         self.ws = ws
         self.connected.set()
         log("Extension Chrome connectée")
+        st = load_settings()
+        if not st.get("extension_seen"):
+            from .config import save_settings
+            st["extension_seen"] = True
+            save_settings(st)
 
     def detach(self):
         self.ws = None
@@ -681,15 +686,26 @@ class PlaywrightBrowser(Browser):
 _browser = None
 
 
-async def get_browser(wait_ext=8.0) -> Browser:
-    """Extension si elle est connectée (ou le devient vite), sinon Chrome dédié via Playwright."""
+async def get_browser(wait_ext=8.0, patient=False) -> Browser:
+    """Extension si elle est connectée (ou le devient), sinon Chrome dédié via Playwright.
+    patient : pour un passage, attend jusqu'à ~2 min une extension déjà utilisée auparavant (elle se reconnecte
+    toute seule après le démarrage de l'application)."""
     global _browser
-    if _browser is not None and (_browser.kind != "extension" or BRIDGE.ws):
-        return _browser
     mode = load_settings().get("browser_backend", "extension")
+    if _browser is not None:
+        if _browser.kind == "extension" and BRIDGE.ws:
+            return _browser
+        if _browser.kind == "playwright" and not (mode == "extension" and BRIDGE.ws):
+            return _browser
+        if _browser.kind == "playwright":  # l'extension est revenue : on repasse sur le vrai Chrome
+            await _browser.stop()
+        _browser = None
     if mode == "extension":
+        wait = max(wait_ext, 130.0) if patient and load_settings().get("extension_seen") else wait_ext
+        if not BRIDGE.ws and wait > 10:
+            log(f"en attente de l'extension Chrome (jusqu'à {int(wait)} s)…")
         try:
-            await asyncio.wait_for(BRIDGE.connected.wait(), wait_ext)
+            await asyncio.wait_for(BRIDGE.connected.wait(), wait)
             _browser = ExtensionBrowser()
             return _browser
         except asyncio.TimeoutError:

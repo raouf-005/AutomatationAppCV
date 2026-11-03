@@ -148,6 +148,10 @@ des CV et de l'agent dépend du modèle choisi.
   restriction du compte, sans le supprimer.
 - **Coût** : compter grossièrement quelques dizaines de centimes de dollar par candidature (CV + agent). La facture
   Anthropic fait foi.
+- **« Erreurs » sur l'extension** (chrome://extensions) : quand StageAuto est fermé, l'extension essaie de se reconnecter
+  (après 30 s, 1 min, puis toutes les 2 min) et Chrome note chaque essai refusé (« WebSocket connection … failed »). C'est
+  sans gravité : clique « Tout effacer ». Dès que l'application tourne, la connexion se fait toute seule, immédiatement
+  si le tableau de bord s'ouvre, sinon en 2 min au plus. Le bouton « Reconnecter » de l'extension force la connexion.
 - **Extension et pièces jointes** : si Chrome refuse de joindre un fichier, active « Autoriser l'accès aux URL de
   fichier » dans les détails de l'extension. L'application bascule aussi d'elle-même sur une méthode de secours.
 

@@ -10,17 +10,53 @@ const attached = new Set();
 
 function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 
-function connect() {
+// Reconnexion espacée quand l'application est fermée (30 s, 1 min, puis toutes les 2 min) : chaque tentative
+// refusée laisse une ligne dans « Erreurs » de chrome://extensions, inutile d'en produire deux par minute.
+// Connexion immédiate quand le tableau de bord s'ouvre ou via le bouton « Reconnecter » de l'extension.
+async function backoffState() {
+  const s = await chrome.storage.session.get(['fails', 'nextTry']);
+  return {fails: s.fails || 0, nextTry: s.nextTry || 0};
+}
+
+async function noteFailure() {
+  const {fails} = await backoffState();
+  const n = fails + 1;
+  const delay = Math.min(120, 30 * 2 ** Math.max(0, n - 1)) * 1000;
+  await chrome.storage.session.set({fails: n, nextTry: Date.now() + delay});
+}
+
+function connect(force) {
   if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
-  try { ws = new WebSocket(URL_WS); } catch (e) { ws = null; return; }
-  ws.onopen = () => { send({event: 'hello', version: chrome.runtime.getManifest().version}); setBadge('on'); };
+  let opened = false;
+  try { ws = new WebSocket(URL_WS); } catch (e) { ws = null; noteFailure(); return; }
+  ws.onopen = () => {
+    opened = true;
+    chrome.storage.session.set({fails: 0, nextTry: 0});
+    send({event: 'hello', version: chrome.runtime.getManifest().version});
+    setBadge('on');
+  };
   ws.onmessage = async (ev) => {
     let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
     try { send({id: m.id, result: await handle(m)}); }
     catch (e) { send({id: m.id, error: String((e && e.message) || e)}); }
   };
-  ws.onclose = () => { ws = null; setBadge(''); };
+  ws.onclose = () => {
+    ws = null;
+    setBadge('');
+    if (!opened) noteFailure();  // l'application ne tourne pas : on espace les essais
+  };
   ws.onerror = () => {};
+}
+
+async function maybeConnect() {
+  if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+  const {nextTry} = await backoffState();
+  if (Date.now() >= nextTry) connect();
+}
+
+async function connectNow() {
+  await chrome.storage.session.set({fails: 0, nextTry: 0});
+  connect();
 }
 
 function setBadge(t) {
@@ -112,8 +148,18 @@ async function handle(m) {
   }
 }
 
-chrome.alarms.create('keepalive', {periodInMinutes: 0.4});
-chrome.alarms.onAlarm.addListener(() => { if (!ws) connect(); else send({event: 'ping'}); });
-chrome.runtime.onStartup.addListener(connect);
-chrome.runtime.onInstalled.addListener(connect);
-connect();
+chrome.alarms.create('keepalive', {periodInMinutes: 0.5});
+chrome.alarms.onAlarm.addListener(() => {
+  if (ws && ws.readyState === 1) send({event: 'ping'});
+  else maybeConnect();
+});
+// Le tableau de bord vient de s'ouvrir : l'application tourne, connexion tout de suite
+chrome.tabs.onUpdated.addListener((id, info, tab) => {
+  if (info.status === 'complete' && (tab.url || '').startsWith('http://127.0.0.1:8765')) connectNow();
+});
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (msg === 'reconnect') { connectNow(); reply(true); }
+});
+chrome.runtime.onStartup.addListener(connectNow);
+chrome.runtime.onInstalled.addListener(connectNow);
+maybeConnect();

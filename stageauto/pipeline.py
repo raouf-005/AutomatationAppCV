@@ -426,7 +426,7 @@ async def run_pass(trigger="manuel", mode="full"):
         db.import_seed()
         s = load_settings()
         phase("navigateur", "veille rapide" if quick else "passage complet")
-        browser = await cdp.get_browser()
+        browser = await cdp.get_browser(patient=True)
         enabled = [k for k, v in s.get("sites_enabled", {}).items() if v and k in SITES]
         if quick and s.get("watch_sites"):
             enabled = [k for k in enabled if k in s["watch_sites"]]
@@ -596,7 +596,7 @@ async def test_linkedin():
     STATE.update(running=True, stop=False, started=db.now(), ended=None)
     try:
         phase("test LinkedIn", "ouverture de Chrome")
-        browser = await cdp.get_browser()
+        browser = await cdp.get_browser(patient=True)
         if browser.kind != "extension" and load_settings().get("linkedin_real_chrome_only", True):
             push("Test LinkedIn", "Extension StageAuto Bridge non connectée : LinkedIn n'est utilisé que via ton vrai Chrome. "
                                   "Charge l'extension (chrome://extensions) puis relance.")
