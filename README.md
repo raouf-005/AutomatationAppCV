@@ -148,6 +148,9 @@ des CV et de l'agent dépend du modèle choisi.
   restriction du compte, sans le supprimer.
 - **Coût** : compter grossièrement quelques dizaines de centimes de dollar par candidature (CV + agent). La facture
   Anthropic fait foi.
+- **Le tableau de bord ne s'ouvre pas** : lance **`StageAuto_debug.bat`**. Il démarre l'application avec une console qui
+  affiche les messages ; envoie ces lignes si tu as besoin d'aide. Le détail est aussi dans
+  `%LOCALAPPDATA%\StageAuto\console.log` et `stageauto.log`.
 - **« Erreurs » sur l'extension** (chrome://extensions) : quand StageAuto est fermé, l'extension essaie de se reconnecter
   (après 30 s, 1 min, puis toutes les 2 min) et Chrome note chaque essai refusé (« WebSocket connection … failed »). C'est
   sans gravité : clique « Tout effacer ». Dès que l'application tourne, la connexion se fait toute seule, immédiatement
@@ -172,7 +175,7 @@ stageauto/
 personal/             NON PUBLIÉ (.gitignore) : profile.json, skill/candidature-stage-ciblee, tpl/, seed/
 personal.example/     structure attendue du dossier personnel
 tests/                test hors ligne (formulaire local, agent simulé)
-install.bat, StageAuto.bat, requirements.txt
+install.bat, StageAuto.bat (lancement discret), StageAuto_debug.bat (avec console), requirements.txt
 ```
 
 Ligne de commande : `StageAuto.bat` (tableau de bord), `StageAuto.bat --run` (passage immédiat),
