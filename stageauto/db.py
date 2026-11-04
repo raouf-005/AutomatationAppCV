@@ -179,6 +179,17 @@ def repair() -> int:
         comp = d.get("company_ai") or (d.get("dossier") or "").split("_")[0]
         x("UPDATE offers SET company=?, norm=? WHERE key=?", (comp, offer_norm(comp, r["title"] or ""), r["key"]))
         n += 1
+    # offres écartées à cause de leur date de début (règle supprimée) : réexaminées une fois si trouvées hier ou aujourd'hui
+    since = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    for r in q("SELECT key, data FROM offers WHERE status='ignored' AND found_at >= ? AND (reason LIKE 'pré-tri : début%' OR "
+               "(reason LIKE 'non éligible%' AND (reason LIKE '%2026%' OR reason LIKE '%2027%' OR reason LIKE '%date%' OR "
+               "reason LIKE '%début%' OR reason LIKE '%dès que possible%' OR reason LIKE '%asap%')))", (since,)):
+        if json.loads(r["data"] or "{}").get("date_requeued"):
+            continue
+        x("UPDATE offers SET status='pending_ai', reason=? WHERE key=?",
+          ("réexaminée : la date de début n'est plus un motif d'écart", r["key"]))
+        set_data(r["key"], date_requeued=1)
+        n += 1
     # CV faits avec les modèles de secours parce que build.py plantait sous Windows (ou PDF vide) : refaits une fois avec
     # le skill au prochain passage, avant l'envoi
     for r in q("SELECT key, data FROM offers WHERE (status='docs_ready' AND reason LIKE '%build du skill en%') "

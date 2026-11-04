@@ -77,6 +77,8 @@ MÉTHODE (rapidité) :
 RÉPONSES AUTORISÉES (n'utilise rien d'autre) : {json.dumps(PROFILE, ensure_ascii=False)}
 Source de l'offre : le site où elle a été trouvée, sinon « Autre ». Visa sponsorship : Non. Prêt à déménager : Oui.
 Années d'expérience : estimation honnête et prudente (1). Prétentions : « Selon la grille de l'entreprise ».
+Date de début du stage différente de février 2027 (2026, dès que possible…) : ce n'est PAS un motif de refus ; postule
+quand même et, si on te demande ta date de disponibilité, donne celle du profil.
 Formation (établissement, diplôme, domaine, année de début « De », année de fin « À ») : la liste etudes, exactement comme
 sur le CV ; ce ne sont pas des données sensibles. Moyenne, notes, mention : laisser vide si facultatif, sinon finish blocked.
 

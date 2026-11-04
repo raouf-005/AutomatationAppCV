@@ -43,7 +43,7 @@ def _tailor_system():
         "Tu n'inventes RIEN : seules les compétences et expériences du profil ci-dessous existent. "
         "Chiffres autorisés uniquement : ceux du profil. "
         f"Jamais : {', '.join(BANNED_TOOLS)} ni compétence absente du profil ; « LLM » toujours avec « en cours ». "
-        "Éligible seulement : stage de fin d'études / 6 mois dès février 2027 en cybersécurité, SOC/CERT, GRC, pentest, "
+        "Éligible seulement : stage de fin d'études / 6 mois (date de début indifférente) en cybersécurité, SOC/CERT, GRC, pentest, "
         "admin systèmes et réseaux, DevOps/DevSecOps, cloud/infra, automatisation, IA appliquée à la cyber ; non éligible si "
         "alternance, CDI, moins de 6 mois, autre domaine, nationalité française/citoyenneté UE/habilitation exigée. "
         "puces : 2 à 5, old = début EXACT (20+ car.) d'une puce \\item du modèle du domaine, new = 95-105 car., au plus 2 \\kw{}. "

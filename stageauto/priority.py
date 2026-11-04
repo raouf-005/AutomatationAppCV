@@ -6,7 +6,8 @@ score : plus l'offre est récente et peu disputée, plus elle passe tôt :
 - candidature simplifiée et méthode déjà mémorisée pour le site (candidature plus rapide).
 
 prescreen : écarte, sans appel à l'IA, les offres manifestement hors cible (alternance, CDI, moins de 6 mois,
-habilitation ou nationalité française exigée, début en 2026). En cas de doute, l'offre passe : l'IA tranche.
+habilitation ou nationalité française exigée). La date de début n'écarte jamais une offre : un stage de fin d'études de
+6 mois est retenu quel que soit son démarrage. En cas de doute, l'offre passe : l'IA tranche.
 """
 import datetime as dt
 import re
@@ -113,11 +114,6 @@ CLEARANCE = re.compile(r"habilitation (secret|confidentiel|defense|de securite)|
                        r"(de )?nationalite francaise (exigee|requise|obligatoire|indispensable)|etre de nationalite francaise|"
                        r"citoyennete (francaise|europeenne|ue)|ressortissant (francais|de l.union)|security clearance|"
                        r"eu citizen|french citizen|nationality: french")
-START_2026 = re.compile(r"(debut|demarrage|a partir d[eu]|des|start(ing)?|commencant)\s+(le\s+)?(\d{1,2}\s+)?"
-                        r"(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre|"
-                        r"january|february|march|april|may|june|july|august|september|october|november|december)\s+2026")
-ASAP = re.compile(r"(debut|demarrage|disponibilite|date de debut|start date|start|starting)\s*(du stage)?\s*:?\s*"
-                  r"(des que possible|asap|as soon as possible|immediat)")
 
 
 def prescreen(o: dict) -> str | None:
@@ -132,8 +128,4 @@ def prescreen(o: dict) -> str | None:
         return "habilitation ou nationalité française / UE exigée"
     if SHORT.search(desc) and not SIX.search(desc):
         return "durée inférieure à 6 mois"
-    if START_2026.search(desc) and "2027" not in desc:
-        return "début en 2026"
-    if ASAP.search(desc) and "2027" not in desc and not re.search(r"fevrier|february", desc):
-        return "début dès que possible (pas 2027)"
-    return None
+    return None  # date de début : jamais un motif d'écart (règle de l'utilisateur)

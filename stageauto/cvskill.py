@@ -26,7 +26,7 @@ SCHEMA = {
     "required": ["eligible", "reason", "lang", "company", "poste", "dossier", "cv_tex", "lettre_tex", "kw", "kw_opt",
                  "message_court", "ville", "recruteur"],
     "properties": {
-        "eligible": {"type": "boolean", "description": "stage 6 mois / fin d'études dès 2027 dans le domaine, exigences remplies"},
+        "eligible": {"type": "boolean", "description": "stage de fin d'études ou de 6 mois dans le domaine, exigences remplies (date de début indifférente)"},
         "reason": {"type": "string"},
         "lang": {"type": "string", "enum": ["fr", "en"]},
         "company": {"type": "string"},
@@ -50,7 +50,7 @@ def _system():
     return ("Tu appliques le skill ci-dessous pour produire le CV et la lettre d'Abderraouf pour UNE offre. Ignore les "
             "instructions d'outils du skill (bash, SendUserFile) : rends directement les deux fichiers .tex complets, les "
             "mots-clés (kw = kw.txt, kw_opt = kw-opt.txt) et un message court. Vérifie d'abord l'éligibilité : stage de "
-            "fin d'études ou de 6 mois à partir de 2027 en cybersécurité, SOC/CERT, GRC, pentest, systèmes et réseaux, "
+            "fin d'études ou de 6 mois (quelle que soit la date de début : 2026, 2027, dès que possible…) en cybersécurité, SOC/CERT, GRC, pentest, systèmes et réseaux, "
             "DevOps/DevSecOps, cloud/infra, automatisation, IA appliquée à la cyber ; non éligible si alternance, CDI, "
             "moins de 6 mois, autre domaine, nationalité française/citoyenneté UE/habilitation exigée, poste situé hors de "
             "France, ou exigence clé absente du profil (outils interdits du skill compris). Si non éligible : cv_tex et lettre_tex vides.\n"

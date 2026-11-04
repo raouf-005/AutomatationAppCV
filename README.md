@@ -56,7 +56,9 @@ Application Windows qui fait, deux fois par jour, la routine de candidature de s
 - **Deux voies en parallèle** : LinkedIn (souris humaine, plus lente) et les autres sites postulent en même temps, chacun
   dans sa fenêtre Chrome.
 - **Pré-tri sans IA** : l'alternance, le CDI, les stages de moins de 6 mois, une habilitation ou la nationalité française
-  exigée et un début en 2026 sont écartés avant tout appel à l'IA. En cas de doute, l'offre passe et l'IA tranche.
+  exigée sont écartés avant tout appel à l'IA. **La date de début n'écarte jamais une offre** : un stage de fin d'études
+  de 6 mois est retenu qu'il démarre en 2026, en 2027 ou « dès que possible » (ta disponibilité, février 2027, reste la
+  réponse donnée dans les formulaires). En cas de doute, l'offre passe et l'IA tranche.
 - **Attentes intelligentes** : l'application attend que la page soit prête au lieu de faire des pauses fixes, et repère
   tout de suite les nouveaux onglets.
 - **CV rapide** (réglage) : modèles adaptés au lieu du skill complet, environ 4 fois plus rapide. La qualité maximale reste
