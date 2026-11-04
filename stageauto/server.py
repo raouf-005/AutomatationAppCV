@@ -64,6 +64,10 @@ async def scheduler():
             # rattrapage du soir : toutes les sources sur 26 h, pour qu'aucune offre du jour ne passe entre deux passages
             pending_sweep = False
             start_run(f"rattrapage du soir {now:%H:%M}", "sweep")
+        if RETRY and not pipeline.STATE["running"]:
+            global _task
+            _task = asyncio.create_task(pipeline.run_retry(list(RETRY)))
+            RETRY.clear()
         resume_at = pipeline.STATE.get("ai_resume_at")
         if resume_at and not pipeline.STATE["running"] and now >= dt.datetime.fromisoformat(resume_at):
             # limite d'IA réinitialisée : passage complet tout de suite (offres gardées en attente d'abord)
@@ -156,12 +160,39 @@ async def state():
                     "found_today": sum(r["new"] for r in db.coverage_today()
                                        if r["source"] not in SITES and r["source"] != "alertes e-mail")},
         "total_applied": db.q("SELECT COUNT(*) n FROM offers WHERE status='applied'")[0]["n"],
+        "failed_today": len(pipeline.failed_offers(1)), "retry_waiting": len(RETRY),
     }
 
 
 @app.post("/api/run")
 async def run(mode: str = "full"):
     return {"started": start_run("manuel", "quick" if mode == "quick" else "full")}
+
+
+RETRY: set = set()  # offres à réessayer pendant qu'un passage est en cours : lancées dès qu'il se termine
+
+
+@app.post("/api/retry")
+async def retry(req: Request):
+    """Bouton « Réessayer » : une offre (key) ou tous les échecs des offres du jour (all)."""
+    b = await req.json()
+    keys = [b["key"]] if b.get("key") else [f["key"] for f in pipeline.failed_offers(int(b.get("days") or 1))]
+    keys = pipeline.requeue(keys)
+    if not keys:
+        return {"ok": True, "count": 0, "started": False}
+    RETRY.update(keys)
+    started = False
+    if not pipeline.STATE["running"]:
+        global _task
+        _task = asyncio.create_task(pipeline.run_retry(list(RETRY)))
+        RETRY.clear()
+        started = True
+    return {"ok": True, "count": len(keys), "started": started}
+
+
+@app.get("/api/failed")
+async def failed(days: int = 1):
+    return pipeline.failed_offers(days)
 
 
 @app.post("/api/test_linkedin")
@@ -183,14 +214,15 @@ async def offers(status: str = "", days: int = 7):
     since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
     sql = "SELECT key, site, company, title, url, status, reason, folder, found_at, applied_at, data FROM offers WHERE found_at >= ?"
     args = [since]
-    if status:
+    if status and status != "failed":
         sql += " AND status=?"
         args.append(status)
     rows = db.q(sql + " ORDER BY COALESCE(applied_at, found_at) DESC LIMIT 400", args)
     for r in rows:
         d = json.loads(r.pop("data") or "{}")
         r["verified"], r["score"], r["reponse"] = d.get("verified", ""), d.get("score"), d.get("reponse", "")
-    return rows
+        r["retryable"] = pipeline.is_failed(r["status"], r["reason"], d)
+    return [r for r in rows if r["retryable"]] if status == "failed" else rows
 
 
 @app.get("/api/contacts")

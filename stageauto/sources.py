@@ -26,13 +26,11 @@ import httpx
 from . import db
 from .config import load_settings, save_settings
 from .notify import log
-from .sites import LINKS_JS, RECENT_RE, SITES, SiteDef, card_offer, clean_title, junk_line, kw_list
+from .sites import INTERN_RE, LINKS_JS, RECENT_RE, SITES, SiteDef, card_offer, clean_title, junk_line, kw_list
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 HEADERS = {"User-Agent": UA, "Accept": "application/json, text/xml;q=0.9, */*;q=0.5", "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8"}
 
-INTERN_RE = re.compile(r"\b(stages?|stagiaires?|interns?|internships?|pfe|fin d.?[ée]tudes|graduation (project|internship)|"
-                       r"end[- ]of[- ]studies)\b", re.I)
 FR_RE = re.compile(r"\bfrance\b|\bfr\b|paris|[iî]le[- ]de[- ]france|lyon|marseille|toulouse|nantes|bordeaux|lille|rennes|"
                    r"\bnice\b|grenoble|montpellier|strasbourg|sophia|saclay|massy|palaiseau|issy|boulogne|nanterre|courbevoie|"
                    r"la d[ée]fense|puteaux|saint[- ]denis|rueil|v[ée]lizy|guyancourt|[ée]lancourt|meudon|gennevilliers|cholet|"
@@ -41,6 +39,24 @@ FR_RE = re.compile(r"\bfrance\b|\bfr\b|paris|[iî]le[- ]de[- ]france|lyon|marsei
                    r"ch[aâ]tillon|arcueil|ivry|vincennes|cannes|antibes|valbonne|mulhouse|annecy|chamb[ée]ry|perpignan|"
                    r"n[iî]mes|avignon|le mans|amiens|poitiers|la rochelle|lorient|vannes|quimper|saint[- ]malo|niort|troyes|"
                    r"belfort|saint[- ]quentin|plaisir|v[ée]lizy|sophia[- ]antipolis|t[ée]l[ée]travail", re.I)
+FOREIGN_RE = re.compile(
+    r"\b(united states|usa|u\.s\.a?|united kingdom|uk|england|scotland|wales|ireland|germany|deutschland|allemagne|netherlands|"
+    r"nederland|pays-bas|belgium|belgique|belgi[eë]|spain|espa[ñn]a|espagne|italy|italia|italie|portugal|switzerland|suisse|schweiz|"
+    r"luxembourg|austria|[öo]sterreich|autriche|poland|polska|pologne|romania|roumanie|india|inde|singapore|singapour|china|chine|"
+    r"japan|japon|canada|australia|australie|brazil|brasil|br[ée]sil|mexico|mexique|morocco|maroc|tunisia|tunisie|sweden|su[èe]de|"
+    r"norway|norv[èe]ge|denmark|danemark|finland|finlande|czech|tch[èe]que|hungary|hongrie|greece|gr[èe]ce|turkey|turquie|israel|"
+    r"emirates|[ée]mirats|uae|dubai|saudi|qatar|egypt|[ée]gypte|south africa|nigeria|kenya|korea|cor[ée]e|taiwan|hong kong|vietnam|"
+    r"thailand|tha[ïi]lande|indonesia|indon[ée]sie|malaysia|malaisie|philippines|new zealand|chile|chili|argentina|argentine|colombia|"
+    r"colombie|peru|p[ée]rou|london|londres|berlin|munich|m[üu]nchen|hamburg|frankfurt|amsterdam|rotterdam|brussels|bruxelles|madrid|"
+    r"barcelona|barcelone|milan|milano|rome|roma|lisbon|lisboa|lisbonne|zurich|z[üu]rich|geneva|gen[èe]ve|dublin|warsaw|varsovie|"
+    r"bucharest|bucarest|bangalore|bengaluru|hyderabad|chennai|pune|noida|gurgaon|shanghai|beijing|shenzhen|tokyo|toronto|montr[ée]al|"
+    r"vancouver|sydney|melbourne|s[ãa]o paulo|new york|san francisco|seattle|boston|austin|chicago|los angeles|denver|atlanta|miami|"
+    r"washington|stockholm|oslo|copenhagen|copenhague|helsinki|vienna|vienne \(autriche\)|wien|prague|budapest|athens|ath[èe]nes|"
+    r"istanbul|tel aviv|riyadh|doha|cairo|le caire|johannesburg|lagos|nairobi|seoul|s[ée]oul|taipei|ho chi minh|bangkok|jakarta|"
+    r"kuala lumpur|manila|auckland|santiago|buenos aires|bogot[áa]|lima|belfast|edinburgh|manchester|cambridge|oxford|bristol|"
+    r"glasgow|leeds|birmingham|casablanca|rabat|tunis|alger|algiers|abidjan|dakar)\b", re.I)
+US_STATE_RE = re.compile(r",\s*(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|"
+                         r"ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b")
 ACCOUNT_RE = re.compile(r"compte|account|sign.?in|sign.?up|log.?in|connexion|s'inscrire|inscription|register|identifiant|"
                         r"mot de passe|password", re.I)
 
@@ -102,10 +118,10 @@ def plugin(pid: str, label: str, api: bool = True):
 
 
 def item(id, title, url, location="", posted=None, intern=False, description="", apply_url="", company="", recent=False,
-         card="", extra=None) -> dict:
+         card="", extra=None, country="") -> dict:
     return {"id": str(id or ""), "title": title or "", "url": url or "", "location": location or "", "posted": posted,
             "intern": bool(intern), "description": description or "", "apply_url": apply_url or "", "company": company or "",
-            "recent": recent, "card": card or "", "extra": extra or {}}
+            "recent": recent, "card": card or "", "extra": extra or {}, "country": (country or "").strip()}
 
 
 def _text(h: str) -> str:
@@ -119,6 +135,8 @@ def _ts(v):
     if v in (None, ""):
         return None
     try:
+        if isinstance(v, str) and v.strip().isdigit():  # Lever : millisecondes en texte (« 1786469891368 »)
+            v = int(v.strip())
         if isinstance(v, (int, float)):
             return dt.datetime.fromtimestamp(v / 1000 if v > 1e11 else v, dt.timezone.utc)
         s = str(v).strip().replace(" UTC", "+00:00").replace("Z", "+00:00")
@@ -170,9 +188,10 @@ async def lever(c, src):
         desc = "\n".join([p.get("descriptionPlain") or ""] +
                          [f"{x.get('text', '')}\n{_text(x.get('content', ''))}" for x in p.get("lists") or []] +
                          [p.get("additionalPlain") or ""])
-        out.append(item(p.get("id"), p.get("text"), p.get("hostedUrl"), cat.get("location") or ", ".join(cat.get("allLocations") or []),
-                        _ts(p.get("createdAt")), bool(re.search(r"intern|stage", cat.get("commitment") or "", re.I)), desc,
-                        p.get("applyUrl")))
+        loc = cat.get("location") or ", ".join(cat.get("allLocations") or [])
+        out.append(item(p.get("id"), p.get("text"), p.get("hostedUrl"), loc, _ts(p.get("createdAt")),
+                        bool(re.search(r"intern|stage", cat.get("commitment") or "", re.I)), desc, p.get("applyUrl"),
+                        country=p.get("country") or ""))
     return out
 
 
@@ -181,11 +200,14 @@ async def ashby(c, src):
     j = await _json(c, f"https://api.ashbyhq.com/posting-api/job-board/{src['params']['org']}?includeCompensation=false")
     out = []
     for p in j.get("jobs") or []:
-        if p.get("isListed") is False:
+        if str(p.get("isListed", True)).lower() == "false":  # « True » / « False » en texte dans l'API
             continue
         url = p.get("jobUrl") or ""
         addr = (p.get("address") or {}).get("postalAddress") or {}
-        loc = ", ".join(dict.fromkeys(x for x in [p.get("location"), addr.get("addressLocality"), addr.get("addressCountry")] if x))
+        loc = p.get("location") or ""
+        for x in (addr.get("addressLocality"), addr.get("addressCountry")):
+            if x and x.lower() not in loc.lower():
+                loc = f"{loc}, {x}" if loc else x
         out.append(item(p.get("id") or url.rstrip("/").split("/")[-1], p.get("title"), url, loc, _ts(p.get("publishedAt")),
                         p.get("employmentType") == "Intern", p.get("descriptionPlain") or _text(p.get("descriptionHtml") or ""),
                         p.get("applyUrl")))
@@ -201,9 +223,11 @@ async def workable(c, src):
         locs = [x for x in p.get("locations") or [] if not x.get("hidden")]
         loc = ", ".join(x for x in [p.get("city"), p.get("country")] if x) or \
             "; ".join(", ".join(x for x in [l.get("city"), l.get("country")] if x) for l in locs)
+        codes = [l.get("countryCode") for l in locs if l.get("countryCode")]
         out.append(item(p.get("shortcode"), p.get("title"), f"https://apply.workable.com/{acc}/j/{p.get('shortcode')}/", loc,
                         _ts(p.get("published_on") or p.get("created_at")), bool(re.search(r"intern", p.get("employment_type") or "", re.I)),
-                        _text(p.get("description") or ""), p.get("application_url"), j.get("name") or ""))
+                        _text(p.get("description") or ""), p.get("application_url"), j.get("name") or "",
+                        country="FR" if "FR" in codes else (codes[0] if codes else "")))
     return out
 
 
@@ -214,7 +238,8 @@ async def recruitee(c, src):
     return [item(p.get("slug") or p.get("id"), p.get("title"), p.get("careers_url") or f"https://{co}.recruitee.com/o/{p.get('slug')}",
                  p.get("location") or ", ".join(x for x in [p.get("city"), p.get("country")] if x),
                  _ts(p.get("published_at") or p.get("created_at")), p.get("employment_type_code") == "internship",
-                 _text((p.get("description") or "") + "\n" + (p.get("requirements") or "")), p.get("careers_apply_url"))
+                 _text((p.get("description") or "") + "\n" + (p.get("requirements") or "")), p.get("careers_apply_url"),
+                 country=p.get("country_code") or "")
             for p in j.get("offers") or [] if p.get("status") in (None, "published")]
 
 
@@ -231,29 +256,83 @@ def _wd_posted(t: str):
 
 
 def _wd_id(tenant: str, path: str, bullets) -> str:
-    rid = path.rsplit("_", 1)[-1] if "_" in path else ((bullets or [""])[0] or hashlib.sha1(path.encode()).hexdigest()[:10])
-    return rid
+    """Référence de l'offre : fin de l'adresse (« …_R0297234-1 » -> R0297234, comme dans l'historique), sinon le champ
+    qui ressemble à une référence (le premier peut être « Regular Employee »)."""
+    m = re.search(r"_([A-Z]{0,4}-?\d{4,})(?:-\d+)?$", path or "")
+    if m:
+        return m.group(1)
+    ref = next((b for b in bullets or [] if re.fullmatch(r"[A-Z]{0,4}-?\d{4,}(-\d+)?", str(b))), "")
+    return ref or hashlib.sha1((path or "").encode()).hexdigest()[:10]
+
+
+_WD_FACETS: dict = {}
+WD_INTERN = re.compile(r"intern|trainee|stagiaire|\bstage|internship", re.I)
+
+
+async def _wd_facets(c, url: str) -> dict:
+    """Filtres proposés par le site Workday de l'entreprise : pays (France) et type de contrat (stagiaire)."""
+    if url in _WD_FACETS:
+        return _WD_FACETS[url]
+    j = await _json(c, url, {"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": ""})
+    out = {}
+
+    def walk(facets, parent=""):
+        for f in facets or []:
+            vals = f.get("values") or []
+            param = f.get("facetParameter") or parent
+            if vals and isinstance(vals[0], dict) and "values" in vals[0]:
+                walk(vals, param)
+                continue
+            if re.search(r"countr|pays", param, re.I):
+                fr = [v["id"] for v in vals if (v.get("descriptor") or "").strip().lower() == "france"]
+                if fr:
+                    out[param] = fr
+            elif not re.search(r"location|distance", param, re.I):
+                ids = [v["id"] for v in vals if WD_INTERN.search(v.get("descriptor") or "") and
+                       not re.search(r"apprenti|alternan|work.?study", v.get("descriptor") or "", re.I)]
+                if ids:
+                    out.setdefault("_intern", param)
+                    out[param] = out.get(param, []) + ids
+    walk(j.get("facets"))
+    _WD_FACETS[url] = out
+    return out
 
 
 @plugin("workday", "Workday")
 async def workday(c, src):
+    """Avec les filtres de l'entreprise (France + stagiaires), les offres arrivent des plus récentes aux plus anciennes :
+    lecture page par page jusqu'à sortir de la fenêtre. Sans ces filtres : recherches « stage » et « intern »."""
     P = src["params"]
     host, tenant, site = P["host"], P["tenant"], P["site"]
     base = f"https://{host}/{P['locale'] + '/' if P.get('locale') else ''}{site}"
+    url = f"https://{host}/wday/cxs/{tenant}/{site}/jobs"
+    hours = src.get("_hours", 24.0)
+    facets = await _wd_facets(c, url)
+    country = any(re.search(r"countr|pays", k, re.I) for k in facets)
+    applied = {k: v for k, v in facets.items() if not k.startswith("_")}
+    searches = [""] if facets.get("_intern") else ["stage", "intern"]
     out, seen = [], set()
-    for text in ("stage", "intern"):
-        for off in range(0, 100, 20):
-            j = await _json(c, f"https://{host}/wday/cxs/{tenant}/{site}/jobs",
-                            {"appliedFacets": {}, "limit": 20, "offset": off, "searchText": text})
+    for text in searches:
+        for off in range(0, 1000, 20):
+            j = await _json(c, url, {"appliedFacets": applied, "limit": 20, "offset": off, "searchText": text})
             posts = j.get("jobPostings") or []
+            old = 0
             for p in posts:
                 path = p.get("externalPath") or ""
+                when = _wd_posted(p.get("postedOn"))
+                if when is not None and when < dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours + 24):
+                    old += 1
                 if path and path not in seen:
                     seen.add(path)
                     out.append(item(_wd_id(tenant, path, p.get("bulletFields")), p.get("title"), base + path,
-                                    p.get("locationsText") or "", _wd_posted(p.get("postedOn")), extra={"path": path}))
+                                    p.get("locationsText") or "", when, intern=bool(facets.get("_intern")), extra={"path": path},
+                                    country="FR" if country else ""))
             if len(posts) < 20 or off + 20 >= (j.get("total") or 0):
                 break
+            if text == "" and old == len(posts):
+                break  # triées par date : toute la page est hors de la fenêtre
+            if text and off >= 180:
+                break  # recherche par mot-clé (ordre de pertinence) : 200 résultats au plus
     return out
 
 
@@ -287,7 +366,8 @@ async def breezy(c, src):
         loc = p.get("location") or {}
         out.append(item(p.get("friendly_id") or p.get("id"), p.get("name"), p.get("url"),
                         loc.get("name") or ", ".join(x for x in [loc.get("city"), (loc.get("country") or {}).get("name")] if x),
-                        _ts(p.get("published_date")), bool(re.search(r"intern", (p.get("type") or {}).get("name") or "", re.I))))
+                        _ts(p.get("published_date")), bool(re.search(r"intern", (p.get("type") or {}).get("name") or "", re.I)),
+                        country=(loc.get("country") or {}).get("id") or ""))
     return out
 
 
@@ -364,11 +444,11 @@ async def check_board(browser, src, quick=False):
             if P.get("pattern"):
                 for c in await tab.eval(LINKS_JS, P["pattern"]) or []:
                     o = card_offer(c, "carrieres", P.get("prefix", "bd"), src["company"])
-                    out[c["id"]] = item(c["id"], o["title"], c["href"], o["location"], intern=True, company=o["company"],
-                                        recent=o["recent"], card=o["card"])
+                    out[c["id"]] = item(c["id"], o["title"], c["href"], o["location"], intern=bool(P.get("interns_only")),
+                                        company=o["company"], recent=o["recent"], card=o["card"])
             else:
                 for l in await tab.eval(JOBLINKS_JS) or []:
-                    out[_sha(l["href"])] = item(_sha(l["href"]), clean_title(l["title"]), l["href"], intern=True,
+                    out[_sha(l["href"])] = item(_sha(l["href"]), clean_title(l["title"]), l["href"], intern=bool(P.get("interns_only")),
                                                 recent=bool(RECENT_RE.search(l["card"])), card=l["card"])
     finally:
         await tab.close()
@@ -506,13 +586,13 @@ def add_manual(url: str, company: str = "") -> dict:
 # autres sites d'emploi connus : essayés une fois, gardés s'ils renvoient des offres (sinon mis de côté tout seuls)
 BOARDS = [
     {"key": "board:apec", "company": "APEC", "template": "https://www.apec.fr/candidat/recherche-emploi.html/emploi?motsCles={q}",
-     "pattern": r"/detail-offre/([0-9]+[A-Z]?)", "prefix": "ap"},
+     "pattern": r"/detail-offre/([0-9]+[A-Z]?)", "prefix": "ap", "interns_only": False},
     {"key": "board:1jeune1solution", "company": "1jeune1solution (stages)",
-     "template": "https://www.1jeune1solution.gouv.fr/stages?motCle={q}", "pattern": r"/stages/([a-z0-9][a-z0-9-]{8,})", "prefix": "1j1s"},
-    {"key": "board:free-work", "company": "Free-Work (IT)",
-     "template": "https://www.free-work.com/fr/tech-it/jobs?query={q}&contracts=internship", "pattern": r"/job-mission/([a-z0-9-]+)",
-     "prefix": "fw"},
+     "template": "https://www.1jeune1solution.gouv.fr/stages?offre-de-stage%5Bquery%5D={q}",
+     "pattern": r"/stages/([a-z0-9][a-z0-9-]{8,})", "prefix": "1j1s", "interns_only": True},
 ]
+# sites retirés des propositions (vérifiés : pas de filtre stage, offres hors cible)
+RETIRED_BOARDS = ["board:free-work"]
 
 
 def setup():
@@ -523,11 +603,17 @@ def setup():
         en["carrieres"] = True
         s["sites_enabled"] = en
         save_settings(s)
-    if not db.q("SELECT 1 FROM methods WHERE site='_boards_seed'"):
+    if not db.q("SELECT 1 FROM methods WHERE site='_boards_seed_v2'"):
         for b in BOARDS:
-            add({"key": b["key"], "platform": "board", "url": b["template"],
-                 "params": {k: b[k] for k in ("template", "pattern", "prefix")}}, b["company"], "site d'emploi connu", "à vérifier")
-        db.x("INSERT OR REPLACE INTO methods(site, data) VALUES('_boards_seed', '{}')")
+            params = json.dumps({k: b[k] for k in ("template", "pattern", "prefix", "interns_only")}, ensure_ascii=False)
+            if db.q("SELECT 1 FROM sources WHERE key=?", (b["key"],)):  # version précédente : adresse de recherche corrigée
+                db.x("UPDATE sources SET url=?, params=? WHERE key=?", (b["template"], params, b["key"]))
+            else:
+                add({"key": b["key"], "platform": "board", "url": b["template"], "params": json.loads(params)},
+                    b["company"], "site d'emploi connu", "à vérifier")
+        for k in RETIRED_BOARDS:
+            db.x("DELETE FROM sources WHERE key=? AND origin='site d''emploi connu'", (k,))
+        db.x("INSERT OR REPLACE INTO methods(site, data) VALUES('_boards_seed_v2', '{}')")
 
 
 # --------------------------------------------------------------------------------- vérification
@@ -539,12 +625,23 @@ def all_sources() -> list:
     return out
 
 
-def fr_ok(loc: str) -> bool:
-    return not (loc or "").strip() or bool(FR_RE.search(loc))
+def fr_ok(loc: str, country: str = "") -> bool:
+    """Stage en France ? Code pays fourni : il décide. Sinon une ville ou une région française l'emporte ; seul un lieu
+    clairement à l'étranger est écarté (une petite ville française absente des listes reste retenue)."""
+    c = (country or "").strip().lower()
+    if c:
+        return c in ("fr", "fra", "france")
+    loc = (loc or "").strip()
+    if not loc or FR_RE.search(loc):
+        return True
+    return not (FOREIGN_RE.search(loc) or US_STATE_RE.search(loc))
 
 
 def _key(src: dict, it: dict) -> str:
     p, P = src["platform"], src["params"]
+    if it["extra"].get("from_page"):  # liste publique refusée, page lue à la place : référence tirée de l'adresse
+        from .sites import key_from_url
+        return key_from_url(it["url"]) or f"pg:{urlparse(it['url']).netloc}:{it['id']}"
     if p == "workday":
         return f"th:{it['id']}" if P.get("tenant") == "thales" else f"wd:{P.get('tenant')}:{it['id']}"
     if p == "board":
@@ -571,7 +668,7 @@ def build(src: dict, items: list, hours: float, first: bool, dry: bool = False) 
         if not (it["intern"] or INTERN_RE.search(title)):
             continue
         st["stages"] += 1
-        if not fr_ok(it["location"]):
+        if not fr_ok(it["location"], it.get("country", "")):
             continue
         st["france"] += 1
         key = _key(src, it)
@@ -621,7 +718,13 @@ async def check(client, browser, src: dict, since_hours: float, quick: bool = Fa
         elif p == "page":
             items = await check_page(browser, src)
         else:
-            items = await PLATFORMS[p].fetch(client, src)
+            try:
+                items = await PLATFORMS[p].fetch(client, dict(src, _hours=hours))
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code not in (403, 429) or browser is None or quick:
+                    raise
+                items = [dict(i, extra={**i["extra"], "from_page": True}) for i in await check_page(browser, src)]
+                log(f"source {src['company']} : liste publique refusée ({e.response.status_code}), page lue dans Chrome")
         offers, st = build(src, items, hours, first, dry)
     except Exception as e:
         err = f"{e.__class__.__name__} {str(e)[:160]}"

@@ -29,6 +29,8 @@ LINKS_JS = r"""(pat) => { const re = new RegExp(pat); const out = {};
 NOT_LOGGED_BTN = r"""(words) => [...document.querySelectorAll('a, button')].some(e => e.offsetParent !== null &&
   words.some(w => (e.innerText || '').trim().toLowerCase() === w))"""
 
+INTERN_RE = re.compile(r"\b(stages?|stagiaires?|interns?|internships?|pfe|fin d.?[ée]tudes|graduation (project|internship)|"
+                       r"end[- ]of[- ]studies)\b", re.I)
 RECENT_RE = re.compile(r"(il y a \d+\s*(min|minute|heure|h\b)|aujourd|à l'instant|hier|nouveau|new|\d+\s*(h|hours?|minutes?) ago|"
                        r"today|just posted|il y a 1 j|1 day ago|publiée? (il y a|aujourd))", re.I)
 ALREADY_RE = re.compile(r"Suivi de candidature|Candidature envoyée|Déjà postulé|Vous avez postulé|Applied\b|Candidaté", re.I)
@@ -38,14 +40,16 @@ FAV_RE = re.compile(r"^(?:ajouter|retirer|enregistrer|sauvegarder|supprimer)\s+(
                     r"(.*?)(?:\s+(?:aux|à vos|à mes|des|de vos|de mes|dans vos|dans mes)\s+favoris)?\.?$", re.I)
 BUTTON_RE = re.compile(r"^(?:postuler|candidater|voir l['’]offre|voir (?:plus|le détail)|en savoir plus|partager|enregistrer|"
                        r"sauvegarder|save|saved|apply|easy apply|candidature (?:simplifiée|facile|rapide)|nouveau|nouvelle|new|"
-                       r"sponsorisée?|promoted|urgent)$", re.I)
+                       r"sponsorisée?|promoted|urgent|suivi de candidature|candidature envoyée|déjà postulé|vous avez postulé|"
+                       r"applied|freelance|cdi|cdd|stage|alternance|temps plein|full[- ]time)$", re.I)
 
 
 def junk_line(line: str) -> bool:
     """Libellé de bouton lu dans une carte d'offre (« Ajouter l'offre … aux favoris », « Postuler », « Nouveau »…) :
     ni un intitulé, ni une entreprise."""
     t = (line or "").strip()
-    return bool(not t or FAV_RE.match(t) or BUTTON_RE.match(t) or re.search(r"\bfavoris?\b", t, re.I))
+    return bool(not t or not re.search(r"[A-Za-zÀ-ÿ]{2}", t) or FAV_RE.match(t) or BUTTON_RE.match(t)
+                or re.search(r"\bfavoris?\b", t, re.I))
 
 
 def clean_title(t: str) -> str:
@@ -271,10 +275,17 @@ class WTTJ(SiteDef):
             if m and (not o["company"] or o["company"] == o["title"]):
                 o["company"] = m.group(1).replace("-", " ").title()
             return o
-        return await search_pages(browser, urls, r"/companies/[^/]+/jobs/([^/?#]+)",
-                                  "() => document.querySelectorAll('a[href*=\"/jobs/\"]').length > 3", make,
-                                  tour_sel='a[href*="/companies/"][href*="/jobs/"]', next_page=lambda u, n: f"{u}&page={n}",
-                                  pages=max_pages(quick))
+        found = await search_pages(browser, urls, r"/companies/[^/]+/jobs/([^/?#]+)",
+                                   "() => document.querySelectorAll('a[href*=\"/jobs/\"]').length > 3", make,
+                                   tour_sel='a[href*="/companies/"][href*="/jobs/"]', next_page=lambda u, n: f"{u}&page={n}",
+                                   pages=max_pages(quick))
+        if not found:
+            from . import db
+            if db.once(f"wttj-vide:{db.today()}"):
+                log("Welcome to the Jungle : aucune offre lue — sa page de recherche a changé (elle propose de créer un profil "
+                    "au lieu d'afficher les résultats). Crée une alerte e-mail « stage cybersécurité » sur WTTJ : StageAuto "
+                    "lit tes alertes dans Gmail et postule aux offres qu'elles contiennent.")
+        return found
 
 
 # --------------------------------------------------------------------------------- JobTeaser
@@ -380,12 +391,18 @@ class SmartRecruiters(SiteDef):
         tab = await browser.new_tab("https://jobs.smartrecruiters.com/")
         out = {}
         limit = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=since_hours + 6)
+        empty = []
         try:
             for comp in load_settings().get("smartrecruiters_companies", []):
+                total = 0
                 for qq in ("stage", "intern"):
                     data = await tab.eval("async (u) => { try { const r = await fetch(u); return await r.json(); } catch (e) { return {}; } }",
                                           f"https://api.smartrecruiters.com/v1/companies/{comp}/postings?limit=100&q={qq}")
+                    total += (data or {}).get("totalFound") or 0
                     for p in (data or {}).get("content", []):
+                        country = ((p.get("location") or {}).get("country") or "").lower()
+                        if (country and country != "fr") or not INTERN_RE.search(p.get("name") or ""):
+                            continue  # stages en France seulement (la recherche renvoie aussi des CDI et l'étranger)
                         try:
                             when = dt.datetime.fromisoformat(p.get("releasedDate", "").replace("Z", "+00:00"))
                         except ValueError:
@@ -397,8 +414,15 @@ class SmartRecruiters(SiteDef):
                                         "location": (p.get("location") or {}).get("city", ""), "posted": p.get("releasedDate"),
                                         "url": f"https://jobs.smartrecruiters.com/{comp}/{p['id']}", "recent": True,
                                         "source": "Site carrière"}
+                if not total:
+                    empty.append(comp)
         finally:
             await tab.close()
+        if empty:
+            from . import db
+            if db.once(f"sr-vide:{db.today()}:{','.join(empty)}"):
+                log(f"SmartRecruiters : aucune offre chez {', '.join(empty)} — identifiant à vérifier (Réglages → Entreprises "
+                    "SmartRecruiters ; il figure dans l'adresse jobs.smartrecruiters.com/IDENTIFIANT)")
         return list(out.values())
 
     async def details(self, tab, offer):

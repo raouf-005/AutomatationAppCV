@@ -445,6 +445,8 @@ async def apply_and_record(browser, o, summary, lane=1):
         summary["login"].append(o)
     else:
         db.set_status(o["key"], "ignored" if st in ("blocked", "not_eligible") else "error", res.get("reason", st))
+    if st in ("blocked", "not_eligible", "error", "needs_login"):
+        db.set_data(o["key"], apply_failed=st, apply_failed_at=db.now())
 
 
 APPLIED_MARK = re.compile(r"Candidature envoyée|Vous avez postulé|Postulé il y a|Applied \d|Application submitted|"
@@ -466,6 +468,78 @@ async def verify_applications(browser, applied):
             pass
         finally:
             await tab.close()
+
+
+# offres écartées volontairement (pas des échecs de candidature) : jamais proposées au réessai groupé
+REJECT_RE = re.compile(r"^(non éligible|pré-tri|hors domaine|descriptif illisible|historique|déjà postulé|plafond|"
+                       r"en attente de l.IA)", re.I)
+
+
+def is_failed(status: str, reason: str, data: dict) -> bool:
+    """Candidature tentée qui n'a pas abouti (erreur, connexion demandée, formulaire bloquant), pas une offre écartée."""
+    if status in ("applied", "already", "ready", "docs_ready", "pending_ai"):
+        return False
+    if data.get("apply_failed"):
+        return True
+    if status in ("error", "blocked_login"):
+        return not REJECT_RE.search(reason or "")
+    return status == "ignored" and bool(reason) and not REJECT_RE.search(reason)
+
+
+def failed_offers(days: int = 1) -> list:
+    """Échecs des offres trouvées aujourd'hui (days=1) ou ces derniers jours."""
+    since = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    out = []
+    for r in db.q("SELECT key, site, company, title, url, status, reason, data FROM offers WHERE found_at >= ? "
+                  "AND status NOT IN ('applied','already','docs_ready','pending_ai','ready')", (since,)):
+        d = json.loads(r.pop("data") or "{}")
+        if is_failed(r["status"], r["reason"], d):
+            out.append(r)
+    return out
+
+
+def requeue(keys) -> list:
+    """Offres à réessayer : CV déjà prêt -> candidature seule ; sinon CV refait d'abord."""
+    done = []
+    for k in keys:
+        r = db.q("SELECT data FROM offers WHERE key=?", (k,))
+        if not r:
+            continue
+        d = json.loads(r[0]["data"] or "{}")
+        ready = bool(d.get("cv") and Path(d["cv"]).exists())
+        db.set_status(k, "docs_ready" if ready else "pending_ai", "réessai demandé")
+        db.set_data(k, apply_failed="", login_retried=0, retry_at=db.now())
+        done.append(k)
+    return done
+
+
+async def run_retry(keys) -> None:
+    """Réessai demandé depuis le tableau de bord : seulement ces offres, sans recherche. Pas inscrit dans l'historique
+    des passages : la période de recherche du passage suivant n'est pas raccourcie."""
+    if STATE["running"]:
+        return
+    keys = set(keys)
+    STATE.update(running=True, stop=False, started=db.now(), ended=None, summary=None, mode="retry", lanes={})
+    summary = {"applied": [], "ready": [], "login": [], "contacts": [], "followups": [], "gmail": {}, "missing": [],
+               "prescreened": 0, "mode": "retry"}
+    try:
+        browser = await cdp.get_browser(patient=True)
+        offers = [o for o in db.pending_ai_offers(days=3) if o["key"] in keys and o.get("site") in SITES]
+        resume = [o for o in pending_ready() if o["key"] in keys]
+        phase("réessai", f"{len(offers) + len(resume)} offre(s) : {len(resume)} avec CV prêt, {len(offers)} à préparer")
+        log(f"réessai demandé : {len(resume) + len(offers)} offre(s)")
+        await stream(browser, offers, summary, resume)
+        if summary["applied"]:
+            phase("vérification", "confirmation des candidatures")
+            await verify_applications(browser, summary["applied"])
+    except Exception as e:
+        log(f"réessai interrompu : {e.__class__.__name__} {e}", "error")
+    finally:
+        STATE["running"] = False
+        STATE["ended"] = db.now()
+        STATE["lanes"] = {}
+        STATE["summary"] = recap(summary)
+        phase("terminé", "réessai")
 
 
 def gmail_due(quick: bool) -> bool:

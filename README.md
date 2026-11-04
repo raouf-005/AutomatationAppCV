@@ -74,8 +74,11 @@ Application Windows qui fait, deux fois par jour, la routine de candidature de s
   Jungle, JobTeaser, APEC…) sont ouvertes, et leurs liens deviennent des offres. Crée des alertes « stage cybersécurité »
   sur ces sites : ce qu'une recherche laisse passer arrive par e-mail. Les liens de suivi sont suivis jusqu'à l'offre.
 - **Rattrapage du soir** (22:30, réglable) : un passage complet relit toutes les sources sur les 26 dernières heures.
-- **Sites carrières des entreprises** (voir plus bas) et **autres sites d'emploi** (APEC, 1jeune1solution, Free-Work) :
-  ces derniers sont essayés au premier passage et gardés seulement s'ils renvoient des offres de stage.
+- **Sites carrières des entreprises** (voir plus bas) et **autres sites d'emploi** (APEC, 1jeune1solution) : ces derniers
+  sont essayés au premier passage et gardés seulement s'ils renvoient des offres de stage.
+- **Welcome to the Jungle** a refondu sa page de recherche (elle propose de créer un profil au lieu d'afficher les
+  résultats) : la recherche directe ne renvoie plus rien. Crée une alerte e-mail « stage cybersécurité » sur WTTJ ; ses
+  offres arrivent alors par les alertes e-mail, lues automatiquement.
 - **IA en pause** : les recherches continuent même sans IA disponible ; les offres attendent et passent dès son retour.
 - L'onglet **Sources** montre, pour aujourd'hui, les offres listées et les offres nouvelles de chaque source.
 
@@ -91,7 +94,12 @@ dans l'onglet **Sources** (adresse du site carrière ou de la page des offres) e
 | SmartRecruiters | Entreprise ajoutée à la liste du site SmartRecruiters. |
 | Autres (page carrière maison, Taleo, Teamtailor, Talentsoft…) | Page lue dans Chrome aux passages complets. Les nouvelles offres sont repérées par différence avec la visite précédente. Si la page n'a pas d'offre, l'application suit le lien « Nos offres » et retient la bonne page. |
 
-- Seuls les **stages en France publiés depuis la dernière lecture** sont retenus (24 h à la première lecture).
+- Seuls les **stages en France publiés depuis la dernière lecture** sont retenus (24 h à la première lecture). Un lieu
+  inconnu (petite ville, « 2 sites ») est gardé ; seul un lieu clairement à l'étranger est écarté, et l'IA vérifie
+  ensuite que le poste est en France.
+- **Workday** : les filtres du site de l'entreprise (France, stagiaires) sont utilisés ; les offres arrivent alors des
+  plus récentes aux plus anciennes et sont lues jusqu'à sortir de la période (chez Thales : plus de 900 stages en France,
+  ceux du jour trouvés en quelques secondes).
 - Une source en erreur 5 fois de suite est mise de côté. Une source qui demande un **compte** pour postuler l'est aussi
   au bout de 2 offres. Toutes sont réactivables dans l'onglet Sources.
 - Les formulaires de ces plateformes se ressemblent d'une entreprise à l'autre : la méthode mémorisée sur l'une sert pour
@@ -105,6 +113,17 @@ Gmail est relu à chaque passage complet, et toutes les 2 h pendant la veille. L
 candidature et classées « entretien », « refus » ou « réponse » (onglet **Réponses**). Une proposition d'**entretien**
 déclenche tout de suite une notification. Les lettres d'information des sites ne sont pas prises pour des réponses.
 Le bouton **Exporter (CSV)** de l'onglet Offres donne toutes les candidatures dans un fichier pour Excel.
+
+## Réessayer les candidatures échouées
+
+Une candidature qui n'a pas abouti (erreur, connexion demandée, formulaire bloquant) apparaît dans la carte
+**Aujourd'hui** avec le bouton **Réessayer les échecs**, et dans l'onglet Offres (filtre « Échecs à réessayer ») avec un
+bouton **Réessayer** par offre. Utile par exemple après t'être connecté à un site. Le bouton peut être recliqué autant de
+fois que voulu.
+- CV déjà prêt : la candidature repart directement ; sinon le CV est refait d'abord.
+- Les offres écartées volontairement (non éligibles, pré-tri, déjà postulées) ne sont pas réessayées.
+- Si un passage est en cours, le réessai démarre dès qu'il se termine. Il ne cherche pas de nouvelles offres et ne
+  raccourcit pas la période de recherche du passage suivant.
 
 ## Vérifications
 
@@ -227,12 +246,15 @@ Dans **Réglages → Intelligence artificielle**, choisis le fournisseur princip
 
 ## À savoir
 
-- **Sites réels non testés** : les sélecteurs de recherche et les sites d'emploi n'ont pas pu être testés depuis
-  l'environnement de développement (pas d'accès réseau à ces sites). L'agent s'adapte aux pages, mais les premiers
-  passages sont à surveiller dans l'onglet *Journal*. Même chose pour les listes publiques des plateformes de
-  recrutement (Greenhouse, Lever, Workday…) et les adresses de recherche d'APEC, 1jeune1solution et Free-Work : testées
-  sur des réponses au format documenté, pas sur les vrais serveurs. L'onglet **Sources** montre pour chacune le dernier
-  résultat ou la dernière erreur, et le bouton « Tester » la relit sur demande.
+- **Vérifié sur les vrais sites** (4 novembre 2026) : listes publiques Greenhouse, Lever, Ashby, Recruitee, Breezy,
+  Workday et SmartRecruiters ; recherches orange.jobs, HelloWork et 1jeune1solution. **Pas vérifiable depuis
+  l'environnement de développement** : Workable (refuse les serveurs), Personio (aucun exemple trouvé), APEC et Indeed
+  (protection anti-robots), LinkedIn et JobTeaser (connexion nécessaire). Ces sites fonctionnent dans ton Chrome ;
+  l'onglet **Sources** montre pour chaque source le dernier résultat ou la dernière erreur, et le bouton « Tester » la
+  relit sur demande.
+- **SmartRecruiters** : une entreprise sans aucune offre est signalée une fois par jour dans le journal (identifiant à
+  vérifier : il figure dans l'adresse jobs.smartrecruiters.com/IDENTIFIANT). Exemple vérifié : « Capgemini » ne renvoie
+  plus rien.
 - **LinkedIn** interdit l'automatisation dans ses conditions d'utilisation. Les limites basses réduisent le risque de
   restriction du compte, sans le supprimer.
 - **Coût** : compter grossièrement quelques dizaines de centimes de dollar par candidature (CV + agent). La facture

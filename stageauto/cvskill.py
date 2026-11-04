@@ -52,8 +52,8 @@ def _system():
             "mots-clés (kw = kw.txt, kw_opt = kw-opt.txt) et un message court. Vérifie d'abord l'éligibilité : stage de "
             "fin d'études ou de 6 mois à partir de 2027 en cybersécurité, SOC/CERT, GRC, pentest, systèmes et réseaux, "
             "DevOps/DevSecOps, cloud/infra, automatisation, IA appliquée à la cyber ; non éligible si alternance, CDI, "
-            "moins de 6 mois, autre domaine, nationalité française/citoyenneté UE/habilitation exigée, ou exigence clé "
-            "absente du profil (outils interdits du skill compris). Si non éligible : cv_tex et lettre_tex vides.\n"
+            "moins de 6 mois, autre domaine, nationalité française/citoyenneté UE/habilitation exigée, poste situé hors de "
+            "France, ou exigence clé absente du profil (outils interdits du skill compris). Si non éligible : cv_tex et lettre_tex vides.\n"
             "Offre en anglais : CV et lettre en anglais selon references/english.md.\n\n"
             f"===== SKILL.md =====\n{skill}\n\n===== references/profil.md =====\n{profil}\n\n"
             f"===== references/english.md =====\n{english}")
