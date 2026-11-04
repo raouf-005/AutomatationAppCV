@@ -78,16 +78,42 @@ a{color:var(--accent)}
   <section class="card">
     <nav class="tabs" id="tabs">
       <button data-t="offres" class="on">Offres</button><button data-t="contacts">Contacts LinkedIn</button>
+      <button data-t="reponses">Réponses</button><button data-t="sources">Sources</button>
       <button data-t="journal">Journal</button><button data-t="notes">Mémoire et apprentissage</button><button data-t="reglages">Réglages</button>
     </nav>
     <div data-p="offres">
       <div class="row" style="border:0"><select id="ofilter" style="max-width:240px" onchange="loadOffers()">
         <option value="">Toutes (7 jours)</option><option value="applied">Postulées</option><option value="ready">À valider</option>
         <option value="docs_ready">CV prêts</option><option value="already">Déjà postulées avant</option>
-        <option value="blocked_login">En attente de connexion</option><option value="ignored">Ignorées</option><option value="error">Erreurs</option></select></div>
+        <option value="blocked_login">En attente de connexion</option><option value="ignored">Ignorées</option><option value="error">Erreurs</option></select>
+        <button onclick="location.href='/api/export.csv'" title="Toutes les candidatures dans un fichier pour Excel">Exporter (CSV)</button></div>
       <div class="tablewrap"><table><thead><tr><th>Entreprise</th><th>Offre</th><th>Site</th><th>Statut</th><th>Détail</th><th>PDF</th></tr></thead><tbody id="otable"></tbody></table></div>
     </div>
     <div data-p="contacts" hidden><div class="tablewrap"><table><thead><tr><th>Date</th><th>Entreprise</th><th>Personne</th><th>Rôle</th><th>Statut</th></tr></thead><tbody id="ctable"></tbody></table></div></div>
+    <div data-p="reponses" hidden>
+      <p class="muted">Réponses des recruteurs lues dans Gmail (à chaque passage complet, et toutes les 2 h pendant la veille).
+        Un entretien proposé déclenche aussi une notification.</p>
+      <div class="tablewrap"><table><thead><tr><th>Date</th><th>Type</th><th>Entreprise</th><th>Offre</th><th>Objet de l'e-mail</th></tr></thead>
+        <tbody id="rtable"></tbody></table></div>
+    </div>
+    <div data-p="sources" hidden>
+      <h2>Aujourd'hui, par source</h2>
+      <p class="muted">Offres listées par chaque source et offres nouvelles (jamais vues ailleurs). Les alertes e-mail des sites et
+        les sites carrières rattrapent ce que les recherches laissent passer.</p>
+      <div class="tablewrap"><table><thead><tr><th>Source</th><th>Offres listées</th><th>Nouvelles</th></tr></thead><tbody id="covtable"></tbody></table></div>
+      <h2 style="margin-top:16px">Sites carrières et autres sites d'emploi surveillés</h2>
+      <p class="muted">Repérés tout seuls quand une candidature mène au site de l'entreprise (Greenhouse, Lever, Workday,
+        Workable, Recruitee, Ashby, Personio, Breezy, page carrière…), ou ajoutés ici. Les plateformes à liste publique sont
+        lues à chaque veille, sans navigateur ; les autres pages lors des passages complets. Seuls les stages en France
+        publiés depuis la dernière lecture sont retenus.</p>
+      <div class="row" style="border:0;gap:8px;flex-wrap:wrap"><input type="text" id="srcurl" placeholder="Adresse du site carrière ou de la page des offres" style="flex:1;min-width:260px">
+        <input type="text" id="srccompany" placeholder="Entreprise (facultatif)" style="max-width:220px">
+        <button class="primary" onclick="addSource()">Ajouter et tester</button></div>
+      <div class="muted" id="srcmsg" style="margin:4px 0 8px"></div>
+      <div class="tablewrap"><table><thead><tr><th>Entreprise / site</th><th>Plateforme</th><th>Origine</th><th>État</th><th>Dernière lecture</th>
+        <th>Offres retenues</th><th></th></tr></thead><tbody id="srctable"></tbody></table></div>
+      <p class="muted" id="srsr" style="margin-top:8px"></p>
+    </div>
     <div data-p="journal" hidden><pre class="log" id="log"></pre><p class="muted" id="summary"></p></div>
     <div data-p="notes" hidden>
       <h2>Rapidité : postuler parmi les premiers</h2>
@@ -139,6 +165,11 @@ a{color:var(--accent)}
           <h2 style="margin-top:12px">Navigation</h2>
           <label class="f">Navigateur<select id="s_browser_backend"><option value="extension">Mon Chrome (extension StageAuto Bridge)</option><option value="playwright">Chrome dédié (profil StageAuto)</option></select></label>
           <label class="f">Heures des passages (HH:MM, séparées par des virgules)<input type="text" id="s_schedule"></label>
+          <label class="f">Rattrapage du soir : toutes les sources sur 26 h (HH:MM, vide = désactivé)<input type="text" id="s_sweep_time"></label>
+          <label class="f">Pages de résultats lues par recherche (passages complets)<input type="number" id="s_max_result_pages" min="1" max="10"></label>
+          <label class="f">Sites carrières lus dans Chrome par passage complet<input type="number" id="s_sources_pages_per_pass" min="0"></label>
+          <label class="f"><span><input type="checkbox" id="s_gmail_alerts"> Lire les alertes e-mail des sites d'emploi (offres que les recherches auraient manquées)</span></label>
+          <label class="f">Gmail relu pendant la veille toutes les (minutes)<input type="number" id="s_gmail_every_min" min="30"></label>
           <label class="f">Max candidatures par passage<input type="number" id="s_max_applications_per_pass"></label>
           <label class="f">Max par entreprise et par jour<input type="number" id="s_max_per_company_per_day"></label>
           <label class="f">Invitations LinkedIn / jour<input type="number" id="s_max_invites_per_day"></label>
@@ -180,6 +211,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('[data-p]').forEach(p => p.hidden = p.dataset.p !== b.dataset.t);
   if (b.dataset.t === 'offres') loadOffers(); if (b.dataset.t === 'contacts') loadContacts();
   if (b.dataset.t === 'notes') { loadNotes(); loadLearning(); } if (b.dataset.t === 'reglages') loadSettings();
+  if (b.dataset.t === 'sources') loadSources(); if (b.dataset.t === 'reponses') loadReplies();
 });
 const VERIF = {page: 'confirmation affichée', linkedin: 'confirmée par LinkedIn', email: 'accusé de réception reçu', 'à vérifier': 'à vérifier'};
 function verif(v) { if (!v) return ''; const warn = v === 'à vérifier';
@@ -193,8 +225,9 @@ async function refresh() {
     : (st.phase === 'terminé' ? `Terminé à ${(st.ended || '').slice(11, 16)}` : 'En attente');
   $('#phdot').className = 'dot ' + (st.running ? 'warn' : 'ok');
   $('#runbtn').disabled = $('#quickbtn').disabled = st.running;
-  $('#watchtxt').textContent = d.watch && d.watch.enabled ? (st.next_check ? `Veille : prochaine vérification ${st.next_check.slice(11, 16)}` : 'Veille active')
-    : 'Veille désactivée';
+  $('#watchtxt').textContent = (st.ai_resume_at ? `IA en pause (limite) : reprise ${st.ai_resume_at.slice(11, 16)} · ` : '') +
+    (d.watch && d.watch.enabled ? (st.next_check ? `Veille : prochaine vérification ${st.next_check.slice(11, 16)}` : 'Veille active')
+    : 'Veille désactivée');
   $('#extdot').className = 'dot ' + (d.extension ? 'ok' : (d.backend === 'extension' ? 'bad' : ''));
   $('#exttxt').textContent = d.extension ? 'connectée' : (d.backend === 'extension' ? 'non connectée' : 'non utilisée');
   const ai = d.ai || {};
@@ -202,6 +235,9 @@ async function refresh() {
   $('#keydot').className = 'dot ' + (ai.ready ? 'ok' : 'bad');
   $('#keytxt').textContent = ai.ready ? 'prête' : 'à configurer (Réglages)';
   $('#conns').innerHTML = Object.entries(d.sites).map(([k, n]) => {
+    if (k === 'carrieres') return `<div class="row"><span class="dot ok"></span><span class="grow">${esc(n)}
+      <br><span class="muted" style="font-size:12px">${d.sources ? `${d.sources.active} surveillé(s), ${d.sources.found_today} offre(s) nouvelle(s) aujourd'hui` : ''}</span></span>
+      <button onclick="document.querySelector('#tabs button[data-t=sources]').click()">Voir</button></div>`;
     const known = k in (st.connections || {}); const c = st.connections[k];
     const cls = c === true ? 'ok' : c === false ? 'bad' : (known ? 'warn' : '');
     const info = (st.connections_info || {})[k] || '';
@@ -246,7 +282,52 @@ const STATUS = {applied: 'postulée', already: 'déjà postulée avant', docs_re
 async function loadOffers() {
   const rows = await api('/api/offers?status=' + $('#ofilter').value) || [];
   $('#otable').innerHTML = rows.map(o => `<tr><td>${esc(o.company)}</td><td><a href="${esc(o.url)}" target="_blank">${esc(o.title)}</a></td>
-    <td>${esc(o.site)}</td><td><span class="st ${esc(o.status)}">${esc(STATUS[o.status] || o.status)}</span> ${verif(o.verified)}</td><td class="muted">${esc((o.reason || '').slice(0, 140))}</td><td>${pdfLinks(o.folder)}</td></tr>`).join('');
+    <td>${esc(SITES[o.site] || o.site)}</td><td><span class="st ${esc(o.status)}">${esc(STATUS[o.status] || o.status)}</span> ${verif(o.verified)}
+      ${o.reponse ? `<span class="st ${o.reponse === 'refus' ? 'error' : 'applied'}">${esc(o.reponse)}</span>` : ''}</td><td class="muted">${esc((o.reason || '').slice(0, 140))}</td><td>${pdfLinks(o.folder)}</td></tr>`).join('');
+}
+const SRC_STATUS = {'active': 'surveillé', 'à vérifier': 'à vérifier (essai au prochain passage)', 'désactivée': 'désactivé',
+  'en échec': 'en échec (5 erreurs de suite)', 'compte requis': 'compte requis pour postuler', 'sans résultat': 'sans résultat (mis de côté)'};
+async function loadSources() {
+  const cov = await api('/api/coverage') || [];
+  $('#covtable').innerHTML = cov.map(r => `<tr><td>${esc(r.name)}</td><td>${r.listed}</td><td>${r.new}</td></tr>`).join('')
+    || '<tr><td colspan="3" class="muted">Pas encore de passage aujourd\'hui.</td></tr>';
+  const d = await api('/api/sources') || {sources: []};
+  $('#srctable').innerHTML = d.sources.map(r => `<tr><td>${r.url ? `<a href="${esc(r.url)}" target="_blank">${esc(r.company || r.key)}</a>` : esc(r.company || r.key)}</td>
+    <td>${esc(r.platform_label)}</td><td class="muted">${esc(r.origin || '')}</td>
+    <td><span class="st ${r.status === 'active' ? 'applied' : (['en échec', 'compte requis'].includes(r.status) ? 'error' : '')}">${esc(SRC_STATUS[r.status] || r.status)}</span>
+      ${r.last_error ? `<div class="muted" style="font-size:12px">${esc(r.last_error.slice(0, 90))}</div>` : ''}</td>
+    <td class="muted">${esc((r.last_check || '').replace('T', ' ').slice(5, 16))}</td><td>${r.found_total || 0}</td>
+    <td style="white-space:nowrap"><button onclick="testSource('${esc(r.key)}')">Tester</button>
+      <button onclick="toggleSource('${esc(r.key)}')">${r.status === 'active' ? 'Désactiver' : 'Activer'}</button>
+      <button onclick="delSource('${esc(r.key)}')" title="Supprimer">✕</button></td></tr>`).join('')
+    || '<tr><td colspan="7" class="muted">Aucun pour l\'instant : ils s\'ajoutent au fil des candidatures.</td></tr>';
+  $('#srsr').textContent = (d.smartrecruiters || []).length ? `SmartRecruiters (site dédié) : ${d.smartrecruiters.join(', ')}` : '';
+}
+async function addSource() {
+  const url = $('#srcurl').value.trim(); if (!url) return;
+  $('#srcmsg').textContent = 'Ajout…';
+  const r = await api('/api/sources', 'POST', {url, company: $('#srccompany').value.trim()});
+  if (!r || !r.ok) { $('#srcmsg').textContent = '✗ ' + (r ? r.error : 'pas de réponse'); return; }
+  $('#srcurl').value = $('#srccompany').value = '';
+  await loadSources(); if (r.key) await testSource(r.key);
+}
+async function testSource(key) {
+  $('#srcmsg').textContent = 'Lecture de la source…';
+  const r = await api('/api/sources/test', 'POST', {key});
+  $('#srcmsg').textContent = !r ? 'Pas de réponse.' : r.ok
+    ? `✓ ${r.items} offres lues, dont ${r.stages} stages, ${r.france} en France, ${r.du_jour} publiées ces dernières 24 h.` +
+      (r.exemples && r.exemples.length ? ' Ex. : ' + r.exemples.join(' · ') : '')
+    : '✗ ' + r.error;
+  loadSources();
+}
+async function toggleSource(key) { await api('/api/sources/toggle', 'POST', {key}); loadSources(); }
+async function delSource(key) { if (confirm('Ne plus surveiller cette source ?')) { await api('/api/sources/delete', 'POST', {key}); loadSources(); } }
+async function loadReplies() {
+  const rows = await api('/api/replies') || [];
+  $('#rtable').innerHTML = rows.map(r => `<tr><td>${esc((r.date || '').replace('T', ' ').slice(5, 16))}</td>
+    <td><span class="st ${r.kind === 'refus' ? 'error' : 'applied'}">${esc(r.kind)}</span></td><td>${esc(r.company)}</td>
+    <td>${esc(r.title)}</td><td class="muted">${esc(r.subject)}</td></tr>`).join('')
+    || '<tr><td colspan="5" class="muted">Aucune réponse repérée pour l\'instant.</td></tr>';
 }
 async function loadContacts() {
   const rows = await api('/api/contacts') || [];

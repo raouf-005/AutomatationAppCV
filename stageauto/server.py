@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import CODE, cdp, db, pipeline, providers, vault
+from . import CODE, cdp, db, pipeline, providers, sources, vault
 from .config import CANDIDATURES, DATA, IS_WIN, PKG, load_settings, save_settings
 from .notify import ALERTS, LOG, log
 from .sites import SITES
@@ -25,6 +25,7 @@ _task = None
 async def _startup():
     providers.migrate_settings()
     db.import_seed()
+    sources.setup()
     fixed = db.repair()
     if fixed:
         log(f"{fixed} offre(s) corrigée(s) : « déjà postulé » n'est plus compté comme envoyé aujourd'hui, entreprise relue")
@@ -46,7 +47,7 @@ async def scheduler():
     """Passages complets aux heures prévues (11:00, 19:00) et veille rapide entre les deux, tant que l'application tourne."""
     done = set()
     next_quick = dt.datetime.now() + dt.timedelta(minutes=2)
-    pending_full = False
+    pending_full = pending_sweep = False
     while True:
         s = load_settings()
         now = dt.datetime.now()
@@ -55,6 +56,20 @@ async def scheduler():
             if now.strftime("%H:%M") == hm and tag not in done:
                 done.add(tag)
                 pending_full = True
+        sweep = (s.get("sweep_time") or "").strip()
+        if sweep and now.strftime("%H:%M") == sweep and f"{now.date()} sweep" not in done:
+            done.add(f"{now.date()} sweep")
+            pending_sweep = True
+        if pending_sweep and not pipeline.STATE["running"]:
+            # rattrapage du soir : toutes les sources sur 26 h, pour qu'aucune offre du jour ne passe entre deux passages
+            pending_sweep = False
+            start_run(f"rattrapage du soir {now:%H:%M}", "sweep")
+        resume_at = pipeline.STATE.get("ai_resume_at")
+        if resume_at and not pipeline.STATE["running"] and now >= dt.datetime.fromisoformat(resume_at):
+            # limite d'IA réinitialisée : passage complet tout de suite (offres gardées en attente d'abord)
+            pipeline.STATE["ai_resume_at"] = None
+            start_run("reprise après la limite d'IA", "full")
+            next_quick = now + dt.timedelta(minutes=s.get("watch_interval_min", 30))
         if not pipeline.STATE["running"]:
             last_full = pipeline.STATE.get("last_full_started")
             if pending_full and last_full and (now - last_full).total_seconds() < 1800:
@@ -137,6 +152,9 @@ async def state():
         "creds": vault.sites_with_creds(list(SITES) + ["gmail"]),
         "alerts": list(ALERTS)[-8:], "log": [l["t"] for l in list(LOG)[-120:]],
         "sites": {k: v.name for k, v in SITES.items()},
+        "sources": {"active": db.q("SELECT COUNT(*) n FROM sources WHERE status='active'")[0]["n"],
+                    "found_today": sum(r["new"] for r in db.coverage_today()
+                                       if r["source"] not in SITES and r["source"] != "alertes e-mail")},
         "total_applied": db.q("SELECT COUNT(*) n FROM offers WHERE status='applied'")[0]["n"],
     }
 
@@ -171,7 +189,7 @@ async def offers(status: str = "", days: int = 7):
     rows = db.q(sql + " ORDER BY COALESCE(applied_at, found_at) DESC LIMIT 400", args)
     for r in rows:
         d = json.loads(r.pop("data") or "{}")
-        r["verified"], r["score"] = d.get("verified", ""), d.get("score")
+        r["verified"], r["score"], r["reponse"] = d.get("verified", ""), d.get("score"), d.get("reponse", "")
     return rows
 
 
@@ -229,6 +247,94 @@ async def test_ai(req: Request):
     b = await req.json()
     pid = b.get("provider") or load_settings().get("llm_provider", "anthropic")
     return await asyncio.to_thread(providers.test, pid)
+
+
+@app.get("/api/sources")
+async def list_sources():
+    """Sites carrières et autres sites d'emploi surveillés, avec leur état."""
+    rows = sources.all_sources()
+    for r in rows:
+        r["platform_label"] = sources.PLATFORMS.get(r["platform"], sources.Platform(r["platform"], r["platform"], False, None)).label
+        r.pop("params", None)
+    sr = load_settings().get("smartrecruiters_companies") or []
+    return {"sources": rows, "smartrecruiters": sr}
+
+
+@app.post("/api/sources")
+async def add_source(req: Request):
+    b = await req.json()
+    return sources.add_manual(b.get("url", ""), b.get("company", ""))
+
+
+@app.post("/api/sources/test")
+async def test_source(req: Request):
+    b = await req.json()
+    browser = None
+    if cdp.BRIDGE.ws:
+        try:
+            browser = await cdp.get_browser(wait_ext=False)
+        except Exception:
+            browser = None
+    return await sources.test(b.get("key", ""), browser)
+
+
+@app.post("/api/sources/toggle")
+async def toggle_source(req: Request):
+    b = await req.json()
+    r = db.q("SELECT status FROM sources WHERE key=?", (b.get("key", ""),))
+    if not r:
+        return {"ok": False}
+    new = "désactivée" if r[0]["status"] == "active" else "active"
+    db.x("UPDATE sources SET status=?, fails=0, account_blocks=0 WHERE key=?", (new, b["key"]))
+    return {"ok": True, "status": new}
+
+
+@app.post("/api/sources/delete")
+async def delete_source(req: Request):
+    b = await req.json()
+    db.x("DELETE FROM sources WHERE key=?", (b.get("key", ""),))
+    db.x("DELETE FROM source_seen WHERE source=?", (b.get("key", ""),))
+    return {"ok": True}
+
+
+@app.get("/api/coverage")
+async def coverage():
+    """Aujourd'hui : offres listées et nouvelles par source (sites, sites carrières, alertes e-mail)."""
+    out = []
+    for r in db.coverage_today():
+        r["name"] = SITES[r["source"]].name if r["source"] in SITES else r["source"]
+        out.append(r)
+    return out
+
+
+@app.get("/api/replies")
+async def replies():
+    """Réponses des recruteurs repérées dans Gmail (entretien, refus, autre), les plus récentes d'abord."""
+    out = []
+    for r in db.q("SELECT site, key, note, created FROM pending WHERE kind='reply' ORDER BY id DESC LIMIT 40"):
+        d = json.loads(r["note"] or "{}")
+        out.append({"kind": r["site"], "key": r["key"], "date": r["created"], "company": d.get("company") or d.get("who", ""),
+                    "title": d.get("title", ""), "subject": d.get("subject", "")})
+    return out
+
+
+@app.get("/api/export.csv")
+async def export_csv():
+    """Toutes les candidatures (pour un tableur) : séparateur « ; » et UTF-8 avec BOM, lisibles directement par Excel."""
+    import csv
+    import io
+    from fastapi.responses import Response
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(["Date", "Entreprise", "Offre", "Site", "Statut", "Vérification", "Réponse", "Lien", "Dossier"])
+    for r in db.q("SELECT key, site, company, title, url, status, folder, applied_at, found_at, data FROM offers "
+                  "WHERE status IN ('applied','already','ready','docs_ready','blocked_login') ORDER BY COALESCE(applied_at, found_at) DESC"):
+        d = json.loads(r["data"] or "{}")
+        w.writerow([(r["applied_at"] or r["found_at"] or "")[:16].replace("T", " "), r["company"], r["title"],
+                    SITES[r["site"]].name if r["site"] in SITES else r["site"], r["status"], d.get("verified", ""),
+                    d.get("reponse", ""), r["url"], r["folder"] or ""])
+    return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="candidatures_{db.today()}.csv"'})
 
 
 @app.get("/api/learning")

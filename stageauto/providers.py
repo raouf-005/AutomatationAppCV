@@ -9,6 +9,7 @@ Interfaces : JsonConversation (réponses JSON : CV, lettre, formulaires), ToolCo
 complete_text (texte libre). Si « llm_fallback » est coché et que le fournisseur principal échoue au premier appel (clé
 refusée, crédit épuisé, service indisponible), les autres fournisseurs configurés prennent le relais, dans l'ordre.
 """
+import datetime as dt
 import json
 import os
 import re
@@ -277,6 +278,8 @@ def configured(pid, wait: bool = True) -> tuple[bool, str]:
         return False, "fournisseur inconnu"
     if refused(pid):
         return False, refused(pid)
+    if limited(pid):
+        return False, limited(pid)
     if p["kind"] == "anthropic":
         return (True, "clé enregistrée") if (vault.get_api_key() or os.environ.get("ANTHROPIC_API_KEY")) \
             else (False, "clé API Anthropic à ajouter")
@@ -348,6 +351,71 @@ def reset():
 
 # Clé refusée (401/403) : le fournisseur est écarté 30 min (ou jusqu'à une nouvelle clé) au lieu d'échouer offre par offre
 _REFUSED: dict = {}
+# Limite d'utilisation atteinte (Claude Code : limite de 5 h, quotidienne ou hebdomadaire ; API : quota, 429) : le
+# fournisseur est écarté jusqu'à l'heure de réinitialisation annoncée ; les autres IA prennent le relais
+_LIMITED: dict = {}
+LIMIT_RE = re.compile(r"usage limit|limit reached|hit your limit|reached your (usage )?limit|rate.?limit|quota|"
+                      r"resource.?exhausted|too many requests|\b429\b|credit balance|limite d.utilisation", re.I)
+_MONTHS = {m: i + 1 for i, m in enumerate("jan feb mar apr may jun jul aug sep oct nov dec".split())}
+
+
+def is_limit_error(e: Exception) -> bool:
+    if isinstance(e, anthropic.RateLimitError):
+        return True
+    return bool(LIMIT_RE.search(str(e))) and not _auth_error(e)
+
+
+def reset_time(e: Exception) -> dt.datetime:
+    """Heure de réinitialisation annoncée par le message (« resets 3pm », « resets Nov 7, 4pm », « |1748127600 »,
+    « in 2 hours », en-tête retry-after), sinon un nouvel essai dans 30 min."""
+    now = dt.datetime.now()
+    msg = str(e)
+    resp = getattr(e, "response", None)
+    ra = resp.headers.get("retry-after") if resp is not None and hasattr(resp, "headers") else None
+    if ra and str(ra).strip().isdigit():
+        return now + dt.timedelta(seconds=int(ra) + 30)
+    m = re.search(r"\|\s*(\d{10})\b", msg)
+    if m:
+        return dt.datetime.fromtimestamp(int(m.group(1))) + dt.timedelta(minutes=2)
+    m = re.search(r"in (\d+) ?(h|hours?|min|minutes?)\b", msg, re.I)
+    if m:
+        n = int(m.group(1))
+        return now + (dt.timedelta(hours=n) if m.group(2).lower().startswith("h") else dt.timedelta(minutes=n)) + dt.timedelta(minutes=2)
+    m = re.search(r"resets?(?: at| on)?\s+(?:([A-Za-z]{3})[a-z]*\.? (\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?:[:h](\d{2}))?\s*(am|pm)?",
+                  msg, re.I)
+    if m:
+        h, mi = int(m.group(3)), int(m.group(4) or 0)
+        ap = (m.group(5) or "").lower()
+        if ap == "pm" and h < 12:
+            h += 12
+        if ap == "am" and h == 12:
+            h = 0
+        if h < 24 and mi < 60:
+            day = now.date()
+            if m.group(1) and m.group(1).lower()[:3] in _MONTHS:
+                try:
+                    day = dt.date(now.year, _MONTHS[m.group(1).lower()[:3]], int(m.group(2)))
+                except ValueError:
+                    pass
+            t = dt.datetime.combine(day, dt.time(h, mi))
+            while t <= now:
+                t += dt.timedelta(days=1)
+            return t + dt.timedelta(minutes=2)
+    return now + dt.timedelta(minutes=30)
+
+
+def limited(pid: str) -> str:
+    r = _LIMITED.get(pid)
+    if r and dt.datetime.now() < r[0]:
+        return r[1]
+    _LIMITED.pop(pid, None)
+    return ""
+
+
+def next_reset():
+    """Plus proche réinitialisation parmi les IA en pause (pour relancer tout seul), ou None."""
+    live = [r[0] for pid, r in _LIMITED.items() if limited(pid)]
+    return min(live) if live else None
 
 
 def _auth_error(e: Exception) -> bool:
@@ -359,6 +427,14 @@ def _auth_error(e: Exception) -> bool:
 
 
 def note_failure(pid: str, e: Exception) -> None:
+    if pid and is_limit_error(e) and not limited(pid):
+        until = reset_time(e)
+        others = [p for p in providers_in_order() if p != pid]
+        msg = f"limite atteinte ({label(pid)}) : reprise vers {until:%H:%M}" + ("" if until.date() == dt.date.today() else f" le {until:%d/%m}")
+        _LIMITED[pid] = (until, msg)
+        log(msg + (f" — relais par {label(others[0])}" if others else
+                   " — aucune autre IA prête : les offres attendent et tout repart tout seul à cette heure-là"), "error")
+        return
     if not pid or not _auth_error(e) or refused(pid):
         return
     msg = f"clé refusée par {label(pid)} ({str(e)[:110]})"
@@ -601,6 +677,7 @@ def complete_text(prompt: str, max_tokens=32000) -> str | None:
 def test(pid: str) -> dict:
     """Bouton « Tester » : une petite question à ce fournisseur (même s'il avait été écarté : on réessaie)."""
     _REFUSED.pop(pid, None)
+    _LIMITED.pop(pid, None)
     ok, why = configured(pid)
     if not ok:
         return {"ok": False, "error": why}

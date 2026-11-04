@@ -10,13 +10,14 @@ Deux voies en parallèle, chacune dans sa fenêtre Chrome : LinkedIn (souris hum
 """
 import asyncio
 import datetime as dt
+import hashlib
 import itertools
 import json
 import re
 import shutil
 from pathlib import Path
 
-from . import cdp, cvskill, db, gmail, linkedin_contacts, priority, providers, replay, vault
+from . import cdp, cvskill, db, gmail, linkedin_contacts, priority, providers, replay, sources, vault  # sources : « carrieres »
 from .agent import Agent
 from .config import CANDIDATURES, DOMAIN_NEG, DOMAIN_POS, WORK, load_settings
 from .forms import NeedLogin, nrm
@@ -138,6 +139,7 @@ async def gather_offers(browser, ids, hours, quick=False):
             if sid == "linkedin":
                 STATE["linkedin_last_search"] = dt.datetime.now()
             log(f"{SITES[sid].name} : {len(lst)} offres listées")
+            db.coverage_add(sid, listed=len(lst))
             found.extend(lst)
     await asyncio.gather(*(one(i) for i in ids))
     return found
@@ -162,11 +164,19 @@ def select_new(offers):
             db.upsert_offer({**o, "status": "ignored", "reason": "hors domaine (titre)"})
             continue
         c = db.company_key(o.get("company", "")) or nrm(o.get("company", ""))[:30]
-        if per_company.get(c, 0) + db.applied_today_for(o.get("company", "")) >= s["max_per_company_per_day"]:
+        # entreprise encore inconnue (lien d'une alerte e-mail) : le plafond est vérifié avant l'envoi, une fois connue
+        if c and per_company.get(c, 0) + db.applied_today_for(o.get("company", "")) >= s["max_per_company_per_day"]:
             continue
-        per_company[c] = per_company.get(c, 0) + 1
+        if c:
+            per_company[c] = per_company.get(c, 0) + 1
         priority.score(o)
         keep.append(o)
+    per_source = {}
+    for o in keep:
+        k = o.get("source_label") or o.get("source") if o.get("site") == "carrieres" else o["site"]
+        per_source[k] = per_source.get(k, 0) + 1
+    for k, n in per_source.items():
+        db.coverage_add(k, new=n)
     keep.sort(key=lambda o: -o["score"])
     return keep[: s.get("max_applications_per_pass", 40) * 2]
 
@@ -218,6 +228,11 @@ async def apply_one(browser, o, lane=1):
         extra = await site.start(tab, o)
         url_now = await tab.url()
         rkey = recipe_key(o, url_now)
+        if o["site"] != "carrieres":
+            try:
+                sources.discover(url_now, o.get("company", ""), f"redirection depuis {SITES[o['site']].name}")
+            except Exception as e:
+                log(f"repérage du site carrière : {e.__class__.__name__}")
         other = sites_mod.key_from_url(url_now) or key_from_seq(url_now)
         if other and other != o["key"]:
             row = db.q("SELECT status FROM offers WHERE key=?", (other,))
@@ -234,6 +249,8 @@ async def apply_one(browser, o, lane=1):
                 tab = res.get("tab") or tab
                 mode = "replay"
                 log(f"méthode mémorisée {rkey} : {res['status']} {res.get('reason', '')}")
+        if (not res or res["status"] == "fallback") and not await asyncio.to_thread(providers.ready):
+            return {"status": "wait_ai", "reason": "IA en pause : candidature reprise plus tard", "seconds": 0, "steps": 0}
         if not res or res["status"] == "fallback":
             goal = (f"Postule à l'offre de stage « {o['title']} » chez {o['company']} ({o['url']}) avec le CV et la lettre "
                     f"fournis (upload cv / lettre ; texte de motivation : @@LETTRE@@ ; message court : @@MESSAGE@@). {extra} "
@@ -247,6 +264,10 @@ async def apply_one(browser, o, lane=1):
                 mode = "replay+agent"
             res = await ag.run(goal)
             tab = ag.tab or tab
+            try:  # « Postuler » a pu mener au site carrière de l'entreprise : il sera surveillé directement
+                sources.discover(await tab.url(), o.get("company", ""), f"candidature depuis {SITES[o['site']].name}")
+            except Exception:
+                pass
         else:
             res["steps"] = 0
         res["seconds"] = round((dt.datetime.now() - t0).total_seconds())
@@ -395,6 +416,8 @@ async def apply_and_record(browser, o, summary, lane=1):
     except Exception as e:
         res = {"status": "error", "reason": f"{e.__class__.__name__} {str(e)[:150]}"}
     st = res["status"]
+    if o.get("site") == "carrieres":
+        sources.note_outcome(o.get("source", ""), st, res.get("reason", ""))
     if st == "applied":
         folder = archive(o)
         db.set_status(o["key"], "applied", res.get("reason", ""), folder=folder, duration=res.get("seconds"))
@@ -410,6 +433,9 @@ async def apply_and_record(browser, o, summary, lane=1):
     elif st == "ready":
         db.set_status(o["key"], "ready", "rempli, en attente de validation")
         summary["ready"].append(o)
+    elif st == "wait_ai":  # limite d'IA, fournisseur en panne : le CV est prêt, la candidature repart plus tard
+        db.set_status(o["key"], "docs_ready", res.get("reason", "en attente de l'IA")[:300])
+        log(f"{o['company']} — {o['title'][:50]} : {res.get('reason', 'IA en pause')[:120]} (reprise au passage suivant)")
     elif st == "already_applied":  # postulé avant (autre site, à la main) : pas une candidature d'aujourd'hui
         db.set_status(o["key"], "already", ("déjà postulé : " + res.get("reason", ""))[:300])
     elif st == "needs_login":
@@ -440,6 +466,56 @@ async def verify_applications(browser, applied):
             pass
         finally:
             await tab.close()
+
+
+def gmail_due(quick: bool) -> bool:
+    """Gmail : à chaque passage complet ; pendant la veille, toutes les N minutes (réglage gmail_every_min)."""
+    last = STATE.get("gmail_last")
+    return not quick or last is None or \
+        (dt.datetime.now() - last).total_seconds() >= load_settings().get("gmail_every_min", 120) * 60
+
+
+async def find_offers(browser, ids, hours, quick):
+    """Recherches des sites + alertes e-mail des sites d'emploi (ce que les recherches auraient manqué)."""
+    found = await gather_offers(browser, ids, hours, quick)
+    if load_settings().get("gmail_alerts", True) and gmail_due(quick) and not STATE["stop"]:
+        phase("alertes e-mail", "offres reçues par les alertes des sites")
+        try:
+            got = await gmail.alerts(browser)
+            db.coverage_add("alertes e-mail", listed=len(got))
+            found += got
+        except Exception as e:
+            log(f"alertes e-mail : {e.__class__.__name__} {str(e)[:100]}")
+    return found
+
+
+def track_replies(g: dict) -> int:
+    """Réponses des recruteurs (entretien, refus, autre) rattachées aux candidatures ; un entretien est signalé tout de
+    suite par notification, une seule fois."""
+    since = (dt.date.today() - dt.timedelta(days=90)).isoformat()
+    rows = db.q("SELECT key, company, title, data FROM offers WHERE status IN ('applied','already') "
+                "AND COALESCE(applied_at, found_at) >= ?", (since,))
+    n = 0
+    for ev in g.get("events") or []:
+        tag = "reply:" + hashlib.sha1(f"{ev['from']}|{ev['subject']}".encode()).hexdigest()[:16]
+        if not db.once(tag):
+            continue
+        hay = nrm(f"{ev['who']} {ev['from']} {ev['subject']} {ev['snippet']}")
+        hit = None
+        for r in rows:
+            words = [w for w in nrm(r["company"]).split() if len(w) >= 3 and w not in ("group", "groupe", "france", "sas")]
+            if words and words[0] in hay:
+                hit = r
+                break
+        if hit:
+            db.set_data(hit["key"], reponse=ev["kind"], reponse_le=db.now(), reponse_sujet=ev["subject"][:160])
+        db.x("INSERT INTO pending(kind, site, key, note, created) VALUES('reply', ?, ?, ?, ?)",
+             (ev["kind"], hit["key"] if hit else "", json.dumps({**ev, "company": hit["company"] if hit else "",
+                                                                  "title": hit["title"] if hit else ""}, ensure_ascii=False), db.now()))
+        if ev["kind"] == "entretien":
+            push(f"Réponse à une candidature : {hit['company'] if hit else ev['who']}", ev["subject"][:160])
+        n += 1
+    return n
 
 
 def match_acks(acks):
@@ -487,21 +563,45 @@ async def run_pass(trigger="manuel", mode="full"):
         if missing and not quick:
             push("Connecte-toi à : " + ", ".join(missing),
                  "Dans Chrome (ou bouton « Se connecter » du tableau de bord) – je postule dès que c'est fait.")
+        hours = 26.0 if mode == "sweep" else window_hours(quick)
         if not await asyncio.to_thread(providers.ready):  # recherche de Claude Code possible : hors de la boucle
-            # sans IA, ni CV ni candidature : inutile de chercher (les offres seront trouvées au passage suivant)
+            # sans IA (limite atteinte, pas de clé) : on cherche quand même, les offres attendent l'IA dans l'ordre de
+            # priorité, et les CV déjà prêts partent si la méthode du site est connue (sans IA)
             summary["no_ai"] = True
-            if STATE.get("no_ai_alert") != db.today():
-                STATE["no_ai_alert"] = db.today()
-                push("StageAuto attend une IA", "Ajoute une clé (Claude, ChatGPT, Gemini…) ou choisis « Claude Code » dans Réglages : "
-                                                "sans IA, je ne peux pas écrire les CV.")
-            phase("en attente d'une IA", "Réglages → Fournisseur d'IA")
+            until = providers.next_reset()
+            STATE["ai_resume_at"] = until.isoformat(timespec="minutes") if until else None
+            tag = f"{db.today()} {until:%H:%M}" if until else db.today()
+            if STATE.get("no_ai_alert") != tag:
+                STATE["no_ai_alert"] = tag
+                if until:
+                    push("IA en pause (limite atteinte)", f"Reprise automatique vers {until:%H:%M}. D'ici là je continue de "
+                                                          "chercher et je garde les offres. Ajoute une autre IA (Gemini, ChatGPT…) "
+                                                          "dans Réglages pour continuer sans attendre.")
+                else:
+                    push("StageAuto attend une IA", "Ajoute une clé (Claude, ChatGPT, Gemini…) ou choisis « Claude Code » dans "
+                                                    "Réglages : sans IA, je ne peux pas écrire les CV. Les offres sont gardées.")
+            ok_ids = [k for k, ok in conn.items() if ok is not False]
+            if quick and "linkedin" in ok_ids and not linkedin_due():
+                ok_ids.remove("linkedin")
+            phase("recherche (IA en pause)", f"offres des {hours:.1f} dernières heures, gardées pour l'IA")
+            kept = 0
+            for o in select_new(await find_offers(browser, ok_ids, hours, quick)):
+                db.upsert_offer({**o, "status": "pending_ai", "reason": "en attente de l'IA"
+                                 + (f" (reprise vers {until:%H:%M})" if until else "")})
+                kept += 1
+            summary["pending_ai"] = kept
+            resume = pending_ready()
+            if resume:
+                phase("candidatures", f"{len(resume)} CV prêts : méthodes mémorisées seulement (IA en pause)")
+                await stream(browser, [], summary, resume)
+            phase("en attente d'une IA", f"reprise vers {until:%H:%M}" if until else "Réglages → Fournisseur d'IA")
             return
-        hours = window_hours(quick)
+        STATE["ai_resume_at"] = None
         ok_ids = [k for k, ok in conn.items() if ok is not False]  # « pas sûr » : essayé quand même
         if quick and "linkedin" in ok_ids and not linkedin_due():
             ok_ids.remove("linkedin")  # LinkedIn : une recherche par heure au plus en veille
         phase("recherche", f"offres des {hours:.1f} dernières heures ({', '.join(ok_ids)})")
-        offers = select_new(await gather_offers(browser, ok_ids, hours, quick))
+        offers = select_new(await find_offers(browser, ok_ids, hours, quick))
         keys = {o["key"] for o in offers}
         offers += [o for o in db.pending_ai_offers() if o["key"] not in keys and o.get("site") in SITES]  # en attente de l'IA
         resume = pending_ready()
@@ -519,6 +619,11 @@ async def run_pass(trigger="manuel", mode="full"):
                     summary["contacts"] += await linkedin_contacts.contact_for(browser, o, o.get("folder", ""))
                 except Exception as e:
                     log(f"contacts {o['company']} : {e.__class__.__name__}")
+        if quick and gmail_due(quick) and not STATE["stop"]:
+            phase("Gmail", "réponses des recruteurs")
+            summary["gmail"] = await gmail.check(browser)
+            STATE["gmail_last"] = dt.datetime.now()
+            track_replies(summary["gmail"])
         if not quick:
             if conn.get("linkedin"):
                 phase("suivi des acceptations")
@@ -528,6 +633,8 @@ async def run_pass(trigger="manuel", mode="full"):
                     log(f"suivi : {e.__class__.__name__}")
             phase("Gmail")
             summary["gmail"] = await gmail.check(browser)
+            STATE["gmail_last"] = dt.datetime.now()
+            track_replies(summary["gmail"])
             n = match_acks(summary["gmail"].get("acks") or [])
             if n:
                 log(f"{n} candidature(s) confirmée(s) par un accusé de réception")
@@ -569,10 +676,15 @@ async def retry_blocked_login(browser, summary):
     if browser.kind != "extension" and load_settings().get("linkedin_real_chrome_only", True):
         ids = [i for i in ids if i != "linkedin"]
     sites_ok = await check_connections(browser, ids)
+    side = {r["key"]: r["status"] for r in db.q("SELECT key, status FROM sources")}
     redo = []
     for r in rows:
         if sites_ok.get(r["site"]) is not False:
             o = {**r, **json.loads(r["data"] or "{}")}
+            if r["site"] == "carrieres":  # site carrière : un seul nouvel essai, aucun si un compte y est demandé
+                if o.get("login_retried") or side.get(o.get("source")) != "active":
+                    continue
+                db.set_data(r["key"], login_retried=1)
             if o.get("cv") and Path(o["cv"]).exists():
                 redo.append(o)
     if redo:

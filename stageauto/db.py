@@ -29,6 +29,14 @@ CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY AUTOINCREMENT, started TE
 CREATE TABLE IF NOT EXISTS apply_stats(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, site TEXT, rkey TEXT, mode TEXT,
   seconds REAL, llm_steps INTEGER, status TEXT, provider TEXT);
 CREATE TABLE IF NOT EXISTS pending(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, site TEXT, key TEXT, note TEXT, created TEXT);
+CREATE TABLE IF NOT EXISTS sources(
+  key TEXT PRIMARY KEY, platform TEXT, company TEXT, url TEXT, params TEXT, origin TEXT, status TEXT, added TEXT,
+  last_check TEXT, last_ok TEXT, last_error TEXT, checks INTEGER DEFAULT 0, fails INTEGER DEFAULT 0,
+  found_total INTEGER DEFAULT 0, last_found INTEGER DEFAULT 0, account_blocks INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS source_seen(source TEXT, item TEXT, first_seen TEXT, PRIMARY KEY(source, item));
+CREATE TABLE IF NOT EXISTS coverage(day TEXT, source TEXT, listed INTEGER DEFAULT 0, new INTEGER DEFAULT 0,
+  PRIMARY KEY(day, source));
+CREATE TABLE IF NOT EXISTS notified(tag TEXT PRIMARY KEY, ts TEXT);
 """
 with _lock:
     _conn.executescript(SCHEMA)
@@ -382,3 +390,18 @@ def requeue_ai_failures() -> int:
 def pending_ai_offers(days=3):
     since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
     return [{**r, **json.loads(r["data"] or "{}")} for r in q("SELECT * FROM offers WHERE status='pending_ai' AND found_at >= ?", (since,))]
+
+
+# ---------- couverture : offres listées et nouvelles par source et par jour ----------
+def coverage_add(source: str, listed: int = 0, new: int = 0) -> None:
+    x("INSERT INTO coverage(day, source, listed, new) VALUES(?,?,?,?) ON CONFLICT(day, source) DO UPDATE SET "
+      "listed=listed+excluded.listed, new=new+excluded.new", (today(), source, listed, new))
+
+
+def coverage_today() -> list:
+    return q("SELECT source, listed, new FROM coverage WHERE day=? ORDER BY new DESC, listed DESC", (today(),))
+
+
+def once(tag: str) -> bool:
+    """Vrai la première fois seulement (notification déjà envoyée, même après un redémarrage)."""
+    return x("INSERT OR IGNORE INTO notified(tag, ts) VALUES(?,?)", (tag, now())).rowcount == 1

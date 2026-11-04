@@ -84,6 +84,11 @@ DEFAULT_SETTINGS = {
     "watch_hours": "08:00-22:00",
     "linkedin_watch_min": 60,         # LinkedIn : une recherche par heure au plus en veille
     "watch_sites": [],                # vide = tous les sites actifs
+    "sweep_time": "22:30",            # rattrapage du soir : toutes les sources sur 26 h (vide = désactivé)
+    "sources_pages_per_pass": 12,     # sites carrières lus dans Chrome par passage complet (tous au rattrapage)
+    "max_result_pages": 4,            # pages de résultats lues par recherche lors des passages complets
+    "gmail_alerts": True,             # lire les alertes e-mail des sites d'emploi pour ne rater aucune offre
+    "gmail_every_min": 120,           # Gmail (réponses, entretiens) relu pendant la veille toutes les N minutes
     "parallel_lanes": True,           # LinkedIn et autres sites postulent en parallèle (2 fenêtres)
     "prescreen": True,                # écarter sans IA les offres manifestement hors cible
     "cv_mode": "skill",               # skill (qualité maximale) | rapide (modèles, ~4x plus rapide)
@@ -100,7 +105,7 @@ DEFAULT_SETTINGS = {
     "smartrecruiters_companies": ["Wavestone1", "SopraSteria1", "Capgemini", "Ubisoft2", "Equativ", "Sanofi"],
     "teamtailor_hosts": ["careers.almond.eu", "recrutement.volkswagengroup.fr"],
     "sites_enabled": {"linkedin": True, "jobteaser": True, "wttj": True, "indeed": True, "hellowork": True,
-                      "smartrecruiters": True, "orange": True},
+                      "smartrecruiters": True, "orange": True, "carrieres": True},
     "parallel_tabs": 3,
     "parallel_llm": 4,
     "ntfy_topic": "",                 # notifications téléphone via ntfy.sh (facultatif)

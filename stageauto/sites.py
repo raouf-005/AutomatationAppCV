@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import html
 import re
+import time
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
@@ -67,28 +68,45 @@ def card_offer(c, site, prefix, source):
 
 
 def kw_list(quick):
-    k = load_settings()["keywords"]
-    return k[:3] if quick else k[:6]
+    """Passage complet : tous les mots-clés. Veille (toutes les 30 min) : 3 mots-clés qui tournent d'une veille à
+    l'autre, pour que chaque mot-clé soit vérifié plusieurs fois par jour sans alourdir la veille."""
+    k = load_settings()["keywords"] or ["stage cybersécurité"]
+    if not quick or len(k) <= 3:
+        return list(k)
+    start = (int(time.time() // 1800) * 3) % len(k)
+    return [k[(start + i) % len(k)] for i in range(3)]
+
+
+def max_pages(quick) -> int:
+    return 1 if quick else max(1, int(load_settings().get("max_result_pages", 4)))
 
 
 DESC_SEL = ("#job-details p, #job-details li, .jobs-description__content p, .jobs-description__content li, "
             "#jobDescriptionText p, #jobDescriptionText li, main p, main li")
 
 
-async def search_pages(browser, urls, pattern, wait_js, make, tour_sel=None):
-    """Ouvre chaque page de résultats, attend les cartes (au lieu d'une pause fixe) et les lit en un appel."""
+async def search_pages(browser, urls, pattern, wait_js, make, tour_sel=None, next_page=None, pages=1):
+    """Ouvre chaque page de résultats, attend les cartes (au lieu d'une pause fixe) et les lit en un appel. Avec
+    next_page, lit les pages suivantes tant qu'elles apportent des offres nouvelles (recherches triées par date et
+    limitées à la période : rien ne passe entre deux pages)."""
     out = {}
     tab = await browser.new_tab()
     try:
-        for url in urls:
-            await tab.goto(url)
-            await tab.wait_for(wait_js, timeout=8)
-            if tour_sel:
-                await tab.tour(tour_sel, "Offre", 4)
-            for c in await tab.eval(LINKS_JS, pattern) or []:
-                o = make(c)
-                if o:
-                    out[o["key"]] = o
+        for base in urls:
+            for n in range(1, pages + 1):
+                url = base if n == 1 else next_page(base, n)
+                await tab.goto(url)
+                await tab.wait_for(wait_js, timeout=8)
+                if tour_sel and n == 1:
+                    await tab.tour(tour_sel, "Offre", 4)
+                fresh = 0
+                for c in await tab.eval(LINKS_JS, pattern) or []:
+                    o = make(c)
+                    if o:
+                        fresh += o["key"] not in out
+                        out[o["key"]] = o
+                if fresh < 5 or not next_page:  # page presque vide ou déjà vue : fin des résultats
+                    break
     finally:
         await tab.close()
     return list(out.values())
@@ -178,6 +196,8 @@ class LinkedIn(SiteDef):
                 f"https://www.linkedin.com/jobs/search/?keywords={quote(qs[-1])}&location=France&f_E=1&f_TPR={tpr}&sortBy=DD"]
         if quick:
             urls = urls[:1]  # veille : une seule recherche, les plus récentes en candidature simplifiée
+        else:
+            urls.insert(1, urls[0] + "&start=25")  # passage complet : 2e page de la recherche principale
         found = {}
         tab = await browser.new_tab()
         try:
@@ -253,7 +273,8 @@ class WTTJ(SiteDef):
             return o
         return await search_pages(browser, urls, r"/companies/[^/]+/jobs/([^/?#]+)",
                                   "() => document.querySelectorAll('a[href*=\"/jobs/\"]').length > 3", make,
-                                  tour_sel='a[href*="/companies/"][href*="/jobs/"]')
+                                  tour_sel='a[href*="/companies/"][href*="/jobs/"]', next_page=lambda u, n: f"{u}&page={n}",
+                                  pages=max_pages(quick))
 
 
 # --------------------------------------------------------------------------------- JobTeaser
@@ -272,7 +293,8 @@ class JobTeaser(SiteDef):
                 for kw in kw_list(quick)]
         return await search_pages(browser, urls, r"/job-offers/([0-9a-f]{8}-[^/?#]+)",
                                   "() => document.querySelectorAll('a[href*=\"/job-offers/\"]').length > 2",
-                                  lambda c: card_offer(c, "jobteaser", "jt", "JobTeaser"), tour_sel='a[href*="/job-offers/"]')
+                                  lambda c: card_offer(c, "jobteaser", "jt", "JobTeaser"), tour_sel='a[href*="/job-offers/"]',
+                                  next_page=lambda u, n: f"{u}&page={n}", pages=max_pages(quick))
 
 
 # ------------------------------------------------------------------------------------ Indeed
@@ -287,8 +309,11 @@ class Indeed(SiteDef):
         days = 1 if since_hours <= 24 else 3
         tab = await browser.new_tab()
         try:
-            for kw in kw_list(quick):
-                await tab.goto(f"https://fr.indeed.com/jobs?q={quote(kw)}&l=France&fromage={days}&sort=date&sc=0kf%3Ajt%28internship%29%3B")
+            for kw, page in [(kw, n) for kw in kw_list(quick) for n in range(max_pages(quick))]:
+                if page and len([1 for o in out.values() if o.get("_kw") == kw]) < 10 * page:
+                    continue  # la page précédente n'était pas pleine : rien de plus pour ce mot-clé
+                await tab.goto(f"https://fr.indeed.com/jobs?q={quote(kw)}&l=France&fromage={days}&sort=date"
+                               f"&sc=0kf%3Ajt%28internship%29%3B" + (f"&start={10 * page}" if page else ""))
                 await tab.wait_for("() => document.querySelectorAll('[data-jk]').length || /just a moment|un instant/i.test(document.title)", timeout=8)
                 await tab.tour("[data-jk]", "Offre", 4)
                 cards = await tab.eval(r"""() => [...document.querySelectorAll('[data-jk]')].map(e => { const c = e.closest('td, li, div.job_seen_beacon') || e;
@@ -300,9 +325,9 @@ class Indeed(SiteDef):
                     break
                 for c in cards:
                     if c["jk"]:
-                        out[c["jk"]] = {"key": f"in:{c['jk']}", "site": "indeed", "title": c["title"], "company": c["company"],
-                                        "location": c["location"], "url": f"https://fr.indeed.com/viewjob?jk={c['jk']}",
-                                        "recent": True, "source": "Indeed", "card": c.get("card", "")}
+                        out.setdefault(c["jk"], {"key": f"in:{c['jk']}", "site": "indeed", "title": c["title"], "company": c["company"],
+                                                 "location": c["location"], "url": f"https://fr.indeed.com/viewjob?jk={c['jk']}",
+                                                 "recent": True, "source": "Indeed", "card": c.get("card", ""), "_kw": kw})
         finally:
             await tab.close()
         return list(out.values())
@@ -325,7 +350,7 @@ class HelloWork(SiteDef):
         return await search_pages(browser, urls, r"/fr-fr/emplois/(\d+)\.html",
                                   "() => document.querySelectorAll('a[href*=\"/fr-fr/emplois/\"]').length > 2",
                                   lambda c: {**card_offer(c, "hellowork", "hw", "HelloWork"), "recent": True},
-                                  tour_sel='a[href*="/fr-fr/emplois/"]')
+                                  tour_sel='a[href*="/fr-fr/emplois/"]', next_page=lambda u, n: f"{u}&p={n}", pages=max_pages(quick))
 
     async def details(self, tab, offer):
         await tab.goto(offer["url"])
@@ -421,23 +446,35 @@ class Orange(SiteDef):
 # Référence d'une offre d'après l'adresse de sa page : après une redirection (HelloWork, Indeed -> site de l'entreprise),
 # on reconnaît une offre déjà connue sous un autre site (même clé que dans l'historique : or:CTS-2026-54782, th:R0344762…).
 URL_KEYS = [
-    (r"orange\.jobs/.*?/job/([A-Za-z]{2,6}-\d{4}-\d+)", "or"),
-    (r"orange\.jobs/.*?[?&]jobSeqNo=([A-Za-z]{2,6}\d+[A-Za-z]{0,6})", None),  # numéro interne : pas de clé fiable
-    (r"linkedin\.com/jobs/view/(?:[^/?#]*?-)?(\d{6,})", "li"),
-    (r"jobs\.smartrecruiters\.com/[^/]+/(\d{6,})", "sr"),
-    (r"hellowork\.com/fr-fr/emplois/(\d+)\.html", "hw"),
-    (r"indeed\.[a-z.]+/.*?[?&](?:jk|vjk)=([0-9a-f]{8,})", "in"),
-    (r"jobteaser\.com/.*?/job-offers/([0-9a-f]{8}-[^/?#]+)", "jt"),
-    (r"welcometothejungle\.com/.*?/companies/[^/]+/jobs/([^/?#]+)", "wttj"),
-    (r"thales[^/]*\.myworkdayjobs\.com/.*?_(R\d{5,})", "th"),
+    (r"orange\.jobs/.*?/job/([A-Za-z]{2,6}-\d{4}-\d+)", "or:{1}"),
+    (r"orange\.jobs/.*?[?&]jobSeqNo=", ""),  # numéro interne : pas de clé fiable
+    (r"linkedin\.com/(?:comm/)?jobs/view/(?:[^/?#]*?-)?(\d{6,})", "li:{1}"),
+    (r"linkedin\.com/.*?[?&]currentJobId=(\d{6,})", "li:{1}"),
+    (r"jobs\.smartrecruiters\.com/[^/]+/(\d{6,})", "sr:{1}"),
+    (r"hellowork\.com/fr-fr/emplois/(\d+)\.html", "hw:{1}"),
+    (r"indeed\.[a-z.]+/.*?[?&](?:jk|vjk)=([0-9a-f]{8,})", "in:{1}"),
+    (r"jobteaser\.com/.*?/job-offers/([0-9a-f]{8}-[^/?#]+)", "jt:{1}"),
+    (r"welcometothejungle\.com/.*?/companies/[^/]+/jobs/([^/?#]+)", "wttj:{1}"),
+    (r"thales[^/]*\.myworkdayjobs\.com/.*?_(R\d{5,})", "th:{1}"),
+    (r"([a-z0-9-]+)\.wd\d+\.myworkdayjobs\.com/.*?/job/.*_([A-Z]{0,4}-?\d{4,})", "wd:{1}:{2}"),
+    (r"greenhouse\.io/.*?/jobs/(\d{5,})", "gh:{1}"),
+    (r"[?&]gh_jid=(\d{5,})", "gh:{1}"),
+    (r"jobs(?:\.eu)?\.lever\.co/[^/]+/([0-9a-f]{8}-[0-9a-f-]{27})", "lv:{1}"),
+    (r"jobs\.ashbyhq\.com/[^/]+/([0-9a-f]{8}-[0-9a-f-]{27})", "ab:{1}"),
+    (r"apply\.workable\.com/([A-Za-z0-9_-]+)/j/([A-Z0-9]{6,})", "wk:{1}:{2}"),
+    (r"([a-z0-9-]+)\.recruitee\.com/o/([a-z0-9-]+)", "rc:{1}:{2}"),
+    (r"([a-z0-9-]+)\.jobs\.personio\.(?:de|com)/job/(\d+)", "ps:{1}:{2}"),
+    (r"([a-z0-9-]+)\.breezy\.hr/p/([a-z0-9-]+)", "bz:{1}:{2}"),
+    (r"apec\.fr/.*?/detail-offre/([0-9]+[A-Z]?)", "ap:{1}"),
 ]
 
 
 def key_from_url(url: str) -> str:
-    for pat, prefix in URL_KEYS:
+    for pat, fmt in URL_KEYS:
         m = re.search(pat, url or "", re.I)
         if m:
-            return f"{prefix}:{m.group(1)}" if prefix else ""
+            return re.sub(r"\{(\d)\}", lambda g: m.group(int(g.group(1))).lower() if fmt.startswith(("wk", "rc", "ps", "bz", "wd"))
+                          and g.group(1) == "1" else m.group(int(g.group(1))), fmt) if fmt else ""
     return ""
 
 

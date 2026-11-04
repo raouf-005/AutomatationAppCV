@@ -64,6 +64,48 @@ Application Windows qui fait, deux fois par jour, la routine de candidature de s
 - L'onglet **Mémoire et apprentissage** affiche le délai moyen entre la détection et la candidature, et l'âge des offres
   au moment de postuler.
 
+## Ne rater aucune offre du jour
+
+- **Tous les mots-clés** à chaque passage complet ; la veille (toutes les 30 min) en vérifie 3 qui tournent d'une veille à
+  l'autre, pour que chacun soit revu plusieurs fois par jour.
+- **Pages suivantes** : les recherches triées par date et limitées à la période lisent les pages de résultats suivantes
+  tant qu'elles apportent des offres nouvelles (4 pages au plus, réglable).
+- **Alertes e-mail** : les alertes des sites d'emploi reçues dans Gmail (LinkedIn, Indeed, HelloWork, Welcome to the
+  Jungle, JobTeaser, APEC…) sont ouvertes, et leurs liens deviennent des offres. Crée des alertes « stage cybersécurité »
+  sur ces sites : ce qu'une recherche laisse passer arrive par e-mail. Les liens de suivi sont suivis jusqu'à l'offre.
+- **Rattrapage du soir** (22:30, réglable) : un passage complet relit toutes les sources sur les 26 dernières heures.
+- **Sites carrières des entreprises** (voir plus bas) et **autres sites d'emploi** (APEC, 1jeune1solution, Free-Work) :
+  ces derniers sont essayés au premier passage et gardés seulement s'ils renvoient des offres de stage.
+- **IA en pause** : les recherches continuent même sans IA disponible ; les offres attendent et passent dès son retour.
+- L'onglet **Sources** montre, pour aujourd'hui, les offres listées et les offres nouvelles de chaque source.
+
+## Sites carrières des entreprises (repérés tout seuls)
+
+Quand une candidature mène au site de l'entreprise (redirection HelloWork, Indeed, LinkedIn « Postuler »…), ce site est
+retenu et surveillé directement : une offre y paraît souvent avant d'être reprise ailleurs. Tu peux aussi en ajouter un
+dans l'onglet **Sources** (adresse du site carrière ou de la page des offres) et le tester tout de suite.
+
+| Plateforme | Lecture |
+|---|---|
+| Greenhouse, Lever, Ashby, Workable, Recruitee, Workday, Personio, Breezy | Liste publique lue en une requête, sans navigateur, à chaque veille, avec la date de publication. |
+| SmartRecruiters | Entreprise ajoutée à la liste du site SmartRecruiters. |
+| Autres (page carrière maison, Taleo, Teamtailor, Talentsoft…) | Page lue dans Chrome aux passages complets. Les nouvelles offres sont repérées par différence avec la visite précédente. Si la page n'a pas d'offre, l'application suit le lien « Nos offres » et retient la bonne page. |
+
+- Seuls les **stages en France publiés depuis la dernière lecture** sont retenus (24 h à la première lecture).
+- Une source en erreur 5 fois de suite est mise de côté. Une source qui demande un **compte** pour postuler l'est aussi
+  au bout de 2 offres. Toutes sont réactivables dans l'onglet Sources.
+- Les formulaires de ces plateformes se ressemblent d'une entreprise à l'autre : la méthode mémorisée sur l'une sert pour
+  les suivantes.
+- **Ajouter une plateforme (développeur)** : dans `stageauto/sources.py`, une fonction décorée par `@plugin("id", "Nom")`
+  qui renvoie la liste des offres d'une source, et un motif dans `detect()`.
+
+## Réponses des recruteurs
+
+Gmail est relu à chaque passage complet, et toutes les 2 h pendant la veille. Les réponses sont rattachées à la
+candidature et classées « entretien », « refus » ou « réponse » (onglet **Réponses**). Une proposition d'**entretien**
+déclenche tout de suite une notification. Les lettres d'information des sites ne sont pas prises pour des réponses.
+Le bouton **Exporter (CSV)** de l'onglet Offres donne toutes les candidatures dans un fichier pour Excel.
+
 ## Vérifications
 
 - **Avant l'envoi** : l'application relit le formulaire et bloque le clic sur « Envoyer » s'il reste un champ obligatoire
@@ -118,14 +160,19 @@ Dans **Réglages → Intelligence artificielle**, choisis le fournisseur princip
 - Avec « Si le fournisseur principal échoue… » coché, les autres fournisseurs prêts prennent le relais (clé refusée,
   crédit épuisé, service indisponible). Claude Code est utilisé automatiquement s'il est installé et qu'aucune clé n'est
   configurée.
+- **Limite d'utilisation atteinte** (Claude Code : limite de 5 h, quotidienne ou hebdomadaire ; quota d'une API) :
+  ce fournisseur est mis en pause jusqu'à l'heure de réinitialisation annoncée et les autres IA prêtes prennent le
+  relais. Ajoute une deuxième IA (Gemini a une offre gratuite, ChatGPT, Kimi…) pour ne jamais t'arrêter. Sans autre IA,
+  l'application continue de chercher, garde les offres et les CV déjà prêts, prévient une fois, puis relance un passage
+  complet toute seule à l'heure de réinitialisation. L'en-tête du tableau de bord affiche « IA en pause : reprise HH:MM ».
 - **Claude Code introuvable** : choisis Claude Code puis clique « Rechercher Claude Code sur ce PC ». La liste montre les
   emplacements essayés (installateur officiel `%USERPROFILE%\.local\bin\claude.exe`, npm, winget, WSL…). S'il n'est
   pas trouvé : dans un terminal, `where claude` (PowerShell : `(Get-Command claude).Source`), puis colle le chemin dans
   « Chemin de la commande claude ». Si la commande n'existe pas (Claude Code utilisé seulement dans l'application de
   bureau), installe la version terminal : PowerShell → `irm https://claude.ai/install.ps1 | iex`, puis tape `claude`
   une fois pour te connecter. Claude Code sous Windows demande aussi Git pour Windows (git-scm.com).
-- Sans aucune IA prête, l'application ne cherche pas d'offres (elle ne pourrait pas écrire les CV) et te le signale.
-  Les offres déjà trouvées sont gardées « en attente de l'IA » et reprises dès qu'une IA est prête.
+- Sans aucune IA prête, l'application cherche quand même et garde les offres « en attente de l'IA » ; elles sont reprises,
+  dans l'ordre de priorité, dès qu'une IA est prête.
 
 ## LinkedIn : uniquement ton vrai Chrome, souris et clavier humains
 
@@ -182,7 +229,10 @@ Dans **Réglages → Intelligence artificielle**, choisis le fournisseur princip
 
 - **Sites réels non testés** : les sélecteurs de recherche et les sites d'emploi n'ont pas pu être testés depuis
   l'environnement de développement (pas d'accès réseau à ces sites). L'agent s'adapte aux pages, mais les premiers
-  passages sont à surveiller dans l'onglet *Journal*.
+  passages sont à surveiller dans l'onglet *Journal*. Même chose pour les listes publiques des plateformes de
+  recrutement (Greenhouse, Lever, Workday…) et les adresses de recherche d'APEC, 1jeune1solution et Free-Work : testées
+  sur des réponses au format documenté, pas sur les vrais serveurs. L'onglet **Sources** montre pour chacune le dernier
+  résultat ou la dernière erreur, et le bouton « Tester » la relit sur demande.
 - **LinkedIn** interdit l'automatisation dans ses conditions d'utilisation. Les limites basses réduisent le risque de
   restriction du compte, sans le supprimer.
 - **Coût** : compter grossièrement quelques dizaines de centimes de dollar par candidature (CV + agent). La facture
@@ -226,6 +276,8 @@ stageauto/
   forms.py            réponses autorisées, remplissage automatique, détection des questions interdites
   cvskill.py          CV + lettre via le skill (SKILL.md + profil.md), build.py, correction, repli modèles
   sites.py            connexion, recherche et lecture des offres par site
+  sources.py          sites carrières des entreprises et autres sites d'emploi (plugins par plateforme, repérage auto)
+  skillrun.py         lance build.py du skill en UTF-8 (Windows)
   linkedin_contacts.py, gmail.py, pipeline.py, server.py, static/index.html
 personal/             NON PUBLIÉ (.gitignore) : profile.json, skill/candidature-stage-ciblee, tpl/, seed/
 personal.example/     structure attendue du dossier personnel

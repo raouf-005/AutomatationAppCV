@@ -392,8 +392,11 @@ class Agent:
             except Exception as e:
                 errors += 1
                 log(f"IA ({conv.provider}) : {e.__class__.__name__} {str(e)[:120]}")
+                if providers.is_limit_error(e):  # limite atteinte : l'offre est rendue, reprise plus tard ou par une autre IA
+                    return {"status": "wait_ai", "reason": f"limite d'IA : {str(e)[:140]}", "steps": self.steps}
                 if errors >= 3 or "refusée" in str(e) or e.__class__.__name__ == "AuthenticationError":
-                    return {"status": "error", "reason": f"fournisseur d'IA : {e.__class__.__name__}", "steps": self.steps}
+                    return {"status": "wait_ai", "reason": f"fournisseur d'IA : {e.__class__.__name__} {str(e)[:100]}",
+                            "steps": self.steps}
                 await asyncio.sleep(5)
                 continue
             if st.refusal:
