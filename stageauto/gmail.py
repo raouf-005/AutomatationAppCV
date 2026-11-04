@@ -11,14 +11,38 @@ from .notify import log
 
 ROWS_JS = r"""() => [...document.querySelectorAll('tr.zA')].slice(0, 60).map((r, i) => {
   const f = r.querySelector('.yX .yW [email], .yW span') || {};
-  return {i, from: (f.getAttribute && f.getAttribute('email')) || '', name: (f.innerText || '').trim(),
+  return {i, from: (f.getAttribute && f.getAttribute('email')) || '', name: (f.innerText || '').trim(), unread: r.classList.contains('zE'),
           subject: ((r.querySelector('.bog') || {}).innerText || '').trim(), snippet: ((r.querySelector('.y2') || {}).innerText || '').trim()}; })"""
+# adresse du compte ouvert (titre « Boîte de réception - x@gmail.com - Gmail ») : deux numéros peuvent mener au même compte
+ACCOUNT_JS = r"""() => { const m = (document.title || '').match(/[\w.+-]+@[\w-]+\.[\w.-]+/); return m ? m[0].toLowerCase() : ''; }"""
+BODY_JS = r"""() => { const b = [...document.querySelectorAll('div.a3s')].pop();
+  return b ? {subject: ((document.querySelector('h2.hP') || {}).innerText || '').trim(), text: (b.innerText || '').slice(0, 4000),
+              links: [...b.querySelectorAll('a[href]')].map(a => a.href)} : null; }"""
+UNREAD_JS = r"""() => { const b = [...document.querySelectorAll('[aria-label], [data-tooltip]')].find(e =>
+  /^(marquer comme non lu|mark as unread)/i.test(e.getAttribute('aria-label') || e.getAttribute('data-tooltip') || ''));
+  if (b) { b.click(); return true; } return false; }"""
 
 ACTION = re.compile(r"entretien|interview|test technique|assessment|disponibilit|rendez-vous|visio|échange t[ée]l[ée]phonique|"
                     r"next steps?|prochaine [ée]tape|convocation|case study|coding (test|challenge)", re.I)
 CONFIRM = re.compile(r"confirm(ez|er)? (votre|ton|your) (adresse|e-?mail|candidature)|v[ée]rifi(ez|er) (votre|your) (adresse|e-?mail)|"
                      r"finalisez votre candidature|verify your email", re.I)
-REFUS = re.compile(r"malheureusement|unfortunately|ne pas donner suite|pas retenu|not (been )?selected|regret", re.I)
+REFUS = re.compile(r"malheureusement|unfortunately|ne pas donner suite|pas retenu|not (been )?selected|regret|"
+                   r"autre candidat|other candidates?|pas (pu )?(donner|accorder) une suite favorable", re.I)
+# offre acceptée : candidature retenue, proposition de stage, convention, « nous avons le plaisir… »
+OFFER = re.compile(r"(votre )?(candidature|profil) (a été |est )?(retenue?|accept[ée]e?|s[ée]lectionn[ée]e?) (pour|au|à)|"
+                   r"nous (avons le plaisir|sommes (heureux|ravis|heureuses|ravies)) de vous (annoncer|informer|proposer|accueillir|confirmer)|"
+                   r"proposition (de stage|d.embauche|de contrat)|promesse d.embauche|convention de stage|offre de stage (vous est|pour vous|ci-jointe)|"
+                   r"(we are|we're) (pleased|happy|delighted|excited|thrilled) to (offer|inform you that|welcome)|offer letter|"
+                   r"(internship|job) offer|(welcome|bienvenue) (to the team|aboard|dans l.[ée]quipe|parmi nous)|"
+                   r"f[ée]licitations[^.]{0,60}(retenu|stage|candidature|accept)", re.I)
+# proposition d'échange : créneau, disponibilités, lien de prise de rendez-vous
+SLOT = re.compile(r"cr[ée]neaux?|disponibilit[ée]s?|calendly|prendre (un )?rendez-vous|planifier|fixer (un|une) (entretien|[ée]change|appel|"
+                  r"rendez-vous)|[ée]changer (avec vous|ensemble|de vive voix)|un (premier |bref |court )?([ée]change|appel|call|entretien)|"
+                  r"appel t[ée]l[ée]phonique|schedule (a|an|your)|book (a|your) (time|slot|call|meeting)|pick a time|choose a time|"
+                  r"seriez-vous disponible|êtes-vous disponible|are you available|would you be available|invitation", re.I)
+BOOKING = re.compile(r"calendly\.com|//cal\.com/|calendar\.app\.google|calendar\.google\.com/calendar/(appointments|u/\d+/appointments)|"
+                     r"outlook\.office(365)?\.com/(owa/)?(calendar|bookwithme)|bookings\.|meetings\.hubspot\.com|doodle\.com|zcal\.co|"
+                     r"tidycal\.com|savvycal\.com|youcanbook\.me|teams\.microsoft\.com/l/meetup|meet\.google\.com/[a-z]|zoom\.us/j/", re.I)
 ACK = re.compile(r"candidature (a bien été |est )?(reçue|envoyée|transmise)|bien reçu votre candidature|application (received|submitted)|"
                  r"thank you for applying|merci pour votre candidature", re.I)
 ALERT = re.compile(r"alerte|alert|newsletter|offres? (du jour|similaires)|jobs? for you|recommand|nouvelles offres", re.I)
@@ -34,18 +58,50 @@ MAIL_LINKS_JS = r"""() => [...document.querySelectorAll('div.a3s a[href]')].map(
   text: (a.innerText || a.getAttribute('aria-label') || '').trim().slice(0, 300)}))"""
 
 
-async def check(browser, base: str = ""):
-    idx = load_settings().get("gmail_index", 0)
-    res = {"actions": [], "confirmed": [], "refus": [], "replies": [], "acks": [], "login": False, "events": []}
-    base = base or f"https://mail.google.com/mail/u/{idx}/#search/newer_than%3A1d"
+def mail_urls() -> list:
+    """Boîtes Gmail à lire (réglage « Comptes Gmail » : numéros u/0, u/1… ou adresses ; par défaut les deux premiers
+    comptes connectés dans Chrome)."""
+    s = load_settings()
+    accs = [str(a).strip() for a in (s.get("gmail_accounts") or []) if str(a).strip()] or [str(s.get("gmail_index", 0))]
+    return [f"https://mail.google.com/mail/u/{a}/#search/newer_than%3A1d" for a in dict.fromkeys(accs)]
+
+
+def classify(txt: str) -> str:
+    """offre (acceptation) > refus > entretien (créneau, échange) ; l'ordre compte : un refus poli contient parfois
+    « félicitations pour votre parcours »."""
+    if REFUS.search(txt):
+        return "refus"
+    if OFFER.search(txt):
+        return "offre"
+    if SLOT.search(txt) or ACTION.search(txt):
+        return "entretien"
+    return ""
+
+
+async def check(browser, base: str = "", bases: list | None = None):
+    """Toutes les boîtes : réponses des recruteurs (offre, entretien / créneau, refus), confirmations d'adresse, accusés
+    de réception. Chaque réponse de recruteur est ouverte pour lire tout le message et repérer un lien de prise de
+    rendez-vous ; un e-mail non lu le redevient."""
+    res = {"actions": [], "confirmed": [], "refus": [], "replies": [], "acks": [], "login": False, "events": [], "accounts": []}
+    for url in ([base] if base else bases or mail_urls()):
+        await _check_box(browser, url, res)
+    return res
+
+
+async def _check_box(browser, base: str, res: dict):
     tab = await browser.new_tab(base)
     try:
         await tab.wait_for("() => document.querySelectorAll('tr.zA').length || /accounts\\.google/.test(location.host)"
                            " || /Aucun message|No messages/.test(document.body.innerText)", timeout=12)
-        await tab.tour("tr.zA", "E-mail", 4)
         if "accounts.google.com" in (await tab.url()):
             res["login"] = True
-            return res
+            return
+        acct = await tab.eval(ACCOUNT_JS) or base
+        if acct in res["accounts"]:
+            return  # même compte qu'une boîte déjà lue (numéro différent)
+        res["accounts"].append(acct)
+        await tab.tour("tr.zA", "E-mail", 4)
+        opened = 0
         for r in await tab.eval(ROWS_JS) or []:
             txt = f"{r['subject']} {r['snippet']}"
             who = r["name"] or r["from"]
@@ -55,24 +111,55 @@ async def check(browser, base: str = ""):
                     res["confirmed"].append(f"{who} : {r['subject'][:80]}")
                 await tab.goto(base)
                 await tab.wait_for("() => document.querySelectorAll('tr.zA').length", timeout=10)
-            elif ALERT_FROM.search(f"{r['from']} {who}") and (ALERT.search(txt) or NEWSLETTER.search(r["subject"])):
+                continue
+            if ALERT_FROM.search(f"{r['from']} {who}") and (ALERT.search(txt) or NEWSLETTER.search(r["subject"])):
                 continue  # alerte d'offres ou lettre d'information d'un site d'emploi : lue par alerts(), pas une réponse
-            elif ACTION.search(txt) and not ACK.search(txt):
-                res["actions"].append(f"{who} : {r['subject'][:90]}")
-                res["events"].append({"kind": "entretien", "who": who, "from": r["from"], "subject": r["subject"], "snippet": r["snippet"]})
-            elif REFUS.search(txt):
-                res["refus"].append(f"{who} : {r['subject'][:80]}")
-                res["events"].append({"kind": "refus", "who": who, "from": r["from"], "subject": r["subject"], "snippet": r["snippet"]})
-            elif ACK.search(txt):  # accusé de réception : sert à confirmer qu'une candidature est bien arrivée
+            kind = classify(txt)
+            recruiting = kind or (not ALERT.search(txt) and re.search(r"stage|internship|candidature|application|recrut|entretien|"
+                                                                       r"interview|poste|offre", txt, re.I))
+            if ACK.search(txt) and kind != "offre":
                 res["acks"].append(f"{who} {r['subject']} {r['snippet'][:120]}")
-            elif not ALERT.search(txt) and re.search(r"stage|internship|candidature|application|recrut", txt, re.I):
-                res["replies"].append(f"{who} : {r['subject'][:80]}")
-                res["events"].append({"kind": "réponse", "who": who, "from": r["from"], "subject": r["subject"], "snippet": r["snippet"]})
+                if not kind:
+                    continue
+            if not recruiting:
+                continue
+            ev = {"kind": kind or "réponse", "who": who, "from": r["from"], "subject": r["subject"], "snippet": r["snippet"],
+                  "account": acct, "link": ""}
+            if opened < 8:  # le message entier : la phrase décisive et le lien de rendez-vous sont rarement dans l'aperçu
+                opened += 1
+                body = await _read(tab, r, base)
+                if body:
+                    ev["kind"] = classify(f"{txt} {body['text']}") or ev["kind"]
+                    ev["excerpt"] = re.sub(r"\s+", " ", body["text"])[:300]
+                    ev["link"] = next((h for h in body["links"] if BOOKING.search(h)), "")
+                    if ev["link"] and ev["kind"] in ("réponse", ""):
+                        ev["kind"] = "entretien"
+            res["events"].append(ev)
+            label = f"{who} : {r['subject'][:90]}"
+            {"entretien": res["actions"], "offre": res["actions"], "refus": res["refus"]}.get(ev["kind"], res["replies"]).append(
+                ("OFFRE : " if ev["kind"] == "offre" else "") + label)
     except Exception as e:
-        log(f"Gmail : {e.__class__.__name__}")
+        log(f"Gmail : {e.__class__.__name__} {str(e)[:100]}")
     finally:
         await tab.close()
-    return res
+
+
+async def _read(tab, r, base):
+    """Ouvre l'e-mail, lit son texte et ses liens, le remet en « non lu » s'il l'était, puis revient à la liste."""
+    try:
+        await tab.eval("(i) => { const r = document.querySelectorAll('tr.zA')[i]; if (r) r.click(); }", r["i"])
+        await tab.wait_for("() => document.querySelectorAll('div.a3s').length", timeout=8)
+        body = await tab.eval(BODY_JS)
+        if body and body.get("subject") and r["subject"] and body["subject"][:40] != r["subject"][:40]:
+            body = None  # un nouvel e-mail a décalé la liste : pas le bon message
+        if r.get("unread"):
+            await tab.eval(UNREAD_JS)
+            await asyncio.sleep(0.5)
+        await tab.goto(base)
+        await tab.wait_for("() => document.querySelectorAll('tr.zA').length", timeout=10)
+        return body
+    except Exception:
+        return None
 
 
 async def _confirm(browser, tab, i) -> bool:
@@ -127,11 +214,21 @@ def _canonical(key: str, url: str) -> str:
 
 
 async def alerts(browser, max_mails: int = 12, base: str = "") -> list:
+    if base:
+        return await _alerts_box(browser, max_mails, base)
+    out, seen = [], set()
+    for url in mail_urls():
+        for o in await _alerts_box(browser, max_mails, url):
+            if o["key"] not in seen:
+                seen.add(o["key"])
+                out.append(o)
+    return out
+
+
+async def _alerts_box(browser, max_mails: int, base: str) -> list:
     """Alertes d'offres reçues ces dernières 24 h (LinkedIn, Indeed, HelloWork, WTTJ, JobTeaser, APEC…) : leurs liens
     deviennent des offres, dédoublonnées ensuite avec celles des recherches."""
     from .sites import junk_line, key_from_url
-    idx = load_settings().get("gmail_index", 0)
-    base = base or f"https://mail.google.com/mail/u/{idx}/#search/newer_than%3A1d"
     found, rows = {}, []
     tab = await browser.new_tab(base)
     try:

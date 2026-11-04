@@ -88,7 +88,8 @@ DEFAULT_SETTINGS = {
     "sources_pages_per_pass": 12,     # sites carrières lus dans Chrome par passage complet (tous au rattrapage)
     "max_result_pages": 4,            # pages de résultats lues par recherche lors des passages complets
     "gmail_alerts": True,             # lire les alertes e-mail des sites d'emploi pour ne rater aucune offre
-    "gmail_every_min": 120,           # Gmail (réponses, entretiens) relu pendant la veille toutes les N minutes
+    "gmail_every_min": 60,            # Gmail (réponses, entretiens, offres) relu pendant la veille toutes les N minutes
+    "gmail_accounts": ["0", "1"],     # boîtes Gmail lues : numéros u/0, u/1… ou adresses (les deux premiers comptes de Chrome)
     "parallel_lanes": True,           # LinkedIn et autres sites postulent en parallèle (2 fenêtres)
     "prescreen": True,                # écarter sans IA les offres manifestement hors cible
     "cv_mode": "skill",               # skill (qualité maximale) | rapide (modèles, ~4x plus rapide)

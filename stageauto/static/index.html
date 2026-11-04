@@ -61,6 +61,7 @@ a{color:var(--accent)}
     <section class="card">
       <h2>Aujourd'hui</h2>
       <div class="kpi" id="kpi"></div>
+      <div id="hotbox" style="margin-top:10px"></div>
       <div id="failedbox" style="margin-top:10px"></div><div id="retrynote" class="muted"></div>
       <div id="applied" style="margin-top:10px"></div>
     </section>
@@ -95,9 +96,10 @@ a{color:var(--accent)}
     </div>
     <div data-p="contacts" hidden><div class="tablewrap"><table><thead><tr><th>Date</th><th>Entreprise</th><th>Personne</th><th>Rôle</th><th>Statut</th></tr></thead><tbody id="ctable"></tbody></table></div></div>
     <div data-p="reponses" hidden>
-      <p class="muted">Réponses des recruteurs lues dans Gmail (à chaque passage complet, et toutes les 2 h pendant la veille).
-        Un entretien proposé déclenche aussi une notification.</p>
-      <div class="tablewrap"><table><thead><tr><th>Date</th><th>Type</th><th>Entreprise</th><th>Offre</th><th>Objet de l'e-mail</th></tr></thead>
+      <p class="muted">Réponses des recruteurs lues dans tes boîtes Gmail (à chaque passage complet, et toutes les heures pendant la
+        veille) : <b>offre / acceptation</b>, <b>échange / entretien</b> (créneau proposé, disponibilités demandées), refus.
+        Une offre ou un échange proposé déclenche tout de suite une notification.</p>
+      <div class="tablewrap"><table><thead><tr><th>Date</th><th>Type</th><th>Entreprise</th><th>Offre</th><th>Objet de l'e-mail</th><th>Boîte</th><th></th></tr></thead>
         <tbody id="rtable"></tbody></table></div>
     </div>
     <div data-p="sources" hidden>
@@ -173,7 +175,7 @@ a{color:var(--accent)}
           <label class="f">Pages de résultats lues par recherche (passages complets)<input type="number" id="s_max_result_pages" min="1" max="10"></label>
           <label class="f">Sites carrières lus dans Chrome par passage complet<input type="number" id="s_sources_pages_per_pass" min="0"></label>
           <label class="f"><span><input type="checkbox" id="s_gmail_alerts"> Lire les alertes e-mail des sites d'emploi (offres que les recherches auraient manquées)</span></label>
-          <label class="f">Gmail relu pendant la veille toutes les (minutes)<input type="number" id="s_gmail_every_min" min="30"></label>
+          <label class="f">Gmail relu pendant la veille toutes les (minutes)<input type="number" id="s_gmail_every_min" min="15"></label>
           <label class="f">Max candidatures par passage<input type="number" id="s_max_applications_per_pass"></label>
           <label class="f">Max par entreprise et par jour<input type="number" id="s_max_per_company_per_day"></label>
           <label class="f">Invitations LinkedIn / jour<input type="number" id="s_max_invites_per_day"></label>
@@ -185,7 +187,7 @@ a{color:var(--accent)}
           <label class="f"><span><input type="checkbox" id="s_spectator_mode"> Mode spectateur : le curseur glisse, parcourt les offres et annonce chaque action (un peu plus lent)</span></label>
           <label class="f">Effort de l'agent (low = rapide et économique)<select id="s_agent_effort"><option>low</option><option>medium</option><option>high</option></select></label>
           <label class="f">Sujet ntfy.sh pour les notifications téléphone (facultatif)<input type="text" id="s_ntfy_topic"></label>
-          <label class="f">Index du compte Gmail dans Chrome (u/0, u/1…)<input type="number" id="s_gmail_index"></label>
+          <label class="f">Comptes Gmail à lire (un par ligne : numéro 0, 1… dans Chrome, ou adresse e-mail)<textarea id="s_gmail_accounts" rows="2"></textarea></label>
         </div>
         <div>
           <h2>Recherche</h2>
@@ -254,6 +256,10 @@ async function refresh() {
   $('#kpi').innerHTML = [['Postulées', (d.applied_today || []).length], ['Trouvées', Object.values(c).reduce((a, b) => a + b, 0)],
     ['Ignorées', c.ignored || 0], ['Invitations', d.invites_today], ['InMails', d.inmails_today], ['Total postulées', d.total_applied]]
     .map(([l, v]) => `<div><b>${v}</b><span class="muted">${l}</span></div>`).join('');
+  $('#hotbox').innerHTML = (d.hot_replies || []).map(r => `<div class="alert" style="margin-bottom:6px">
+      <b>${r.kind === 'offre' ? '🎉 Offre / acceptation' : '📅 Échange proposé'} : ${esc(r.company)}</b>
+      <span class="muted">— ${esc(r.subject.slice(0, 90))} · ${esc((r.date || '').replace('T', ' ').slice(5, 16))}${r.account ? ' · ' + esc(r.account) : ''}</span>
+      ${r.link ? ` <a href="${esc(r.link)}" target="_blank">Choisir un créneau</a>` : ''}</div>`).join('');
   $('#failedbox').innerHTML = d.failed_today ? `<div class="row" style="border:0"><span class="grow"><b>${d.failed_today}</b>
       candidature(s) échouée(s) aujourd'hui (erreur, connexion demandée, formulaire bloquant)${d.retry_waiting ? ` · réessai en attente de la fin du passage` : ''}</span>
       <button class="primary" onclick="retryAll()">Réessayer les échecs</button></div>` : '';
@@ -347,9 +353,12 @@ async function toggleSource(key) { await api('/api/sources/toggle', 'POST', {key
 async function delSource(key) { if (confirm('Ne plus surveiller cette source ?')) { await api('/api/sources/delete', 'POST', {key}); loadSources(); } }
 async function loadReplies() {
   const rows = await api('/api/replies') || [];
+  const KIND = {offre: '🎉 offre / acceptation', entretien: '📅 échange / entretien', refus: 'refus', 'réponse': 'réponse'};
   $('#rtable').innerHTML = rows.map(r => `<tr><td>${esc((r.date || '').replace('T', ' ').slice(5, 16))}</td>
-    <td><span class="st ${r.kind === 'refus' ? 'error' : 'applied'}">${esc(r.kind)}</span></td><td>${esc(r.company)}</td>
-    <td>${esc(r.title)}</td><td class="muted">${esc(r.subject)}</td></tr>`).join('')
+    <td><span class="st ${r.kind === 'refus' ? 'error' : 'applied'}" style="${r.kind === 'offre' ? 'font-weight:700' : ''}">${esc(KIND[r.kind] || r.kind)}</span></td>
+    <td>${esc(r.company)}</td><td>${esc(r.title)}</td>
+    <td class="muted" title="${esc(r.excerpt || '')}">${esc(r.subject)}</td><td class="muted">${esc(r.account || '')}</td>
+    <td>${r.link ? `<a href="${esc(r.link)}" target="_blank">Choisir un créneau</a>` : ''}</td></tr>`).join('')
     || '<tr><td colspan="5" class="muted">Aucune réponse repérée pour l\'instant.</td></tr>';
 }
 async function loadContacts() {
@@ -375,7 +384,7 @@ async function loadNotes() {
   $('#notes').innerHTML = Object.entries(n).map(([s, m]) => `<div class="row" style="display:block"><b>${esc(s)}</b>${m.stats ? ` <span class="muted">(${m.stats.n} passages, ${m.stats.avg} s en moyenne)</span>` : ''}
      <ul>${(m.notes || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`).join('') || 'Rien encore : les méthodes se remplissent à chaque candidature.';
 }
-const LISTS = ['keywords', 'linkedin_searches', 'smartrecruiters_companies'];
+const LISTS = ['keywords', 'linkedin_searches', 'smartrecruiters_companies', 'gmail_accounts'];
 async function loadSettings() {
   S = await api('/api/settings'); if (!S) { S = {}; return; }
   for (const [k, v] of Object.entries(S)) {

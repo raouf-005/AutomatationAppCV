@@ -107,12 +107,25 @@ dans l'onglet **Sources** (adresse du site carrière ou de la page des offres) e
 - **Ajouter une plateforme (développeur)** : dans `stageauto/sources.py`, une fonction décorée par `@plugin("id", "Nom")`
   qui renvoie la liste des offres d'une source, et un motif dans `detect()`.
 
-## Réponses des recruteurs
+## Réponses des recruteurs (toutes tes boîtes Gmail)
 
-Gmail est relu à chaque passage complet, et toutes les 2 h pendant la veille. Les réponses sont rattachées à la
-candidature et classées « entretien », « refus » ou « réponse » (onglet **Réponses**). Une proposition d'**entretien**
-déclenche tout de suite une notification. Les lettres d'information des sites ne sont pas prises pour des réponses.
-Le bouton **Exporter (CSV)** de l'onglet Offres donne toutes les candidatures dans un fichier pour Excel.
+Les boîtes Gmail connectées dans Chrome sont relues à chaque passage complet, et toutes les heures pendant la veille.
+Réglage **Comptes Gmail** : `0` et `1` par défaut (les deux premiers comptes de Chrome), ou tes adresses, une par ligne.
+Deux numéros qui mènent au même compte ne sont lus qu'une fois.
+
+- **🎉 Offre / acceptation** : candidature retenue, proposition de stage, convention de stage, « nous avons le plaisir de
+  vous annoncer… », offer letter.
+- **📅 Échange / entretien** : créneau proposé, disponibilités demandées, invitation à un appel ou à un entretien. Le lien
+  de prise de rendez-vous (Calendly, Google Agenda, Outlook, HubSpot, Teams, Meet, Zoom…) est repéré : bouton
+  « Choisir un créneau ».
+- **Refus** (un refus poli contenant « félicitations pour votre parcours » reste un refus) et **réponse** (autre message).
+
+Chaque réponse de recruteur est ouverte pour lire le message entier : la phrase décisive et le lien sont rarement dans
+l'aperçu. Un e-mail non lu est remis en « non lu » après lecture, pour ne pas le rater dans ta boîte. Une offre ou un
+échange proposé déclenche **tout de suite une notification** et s'affiche en tête de la carte **Aujourd'hui** pendant
+7 jours ; tout est listé dans l'onglet **Réponses**, avec la boîte qui l'a reçu. Les lettres d'information des sites ne
+sont pas prises pour des réponses. Le bouton **Exporter (CSV)** de l'onglet Offres donne toutes les candidatures, avec
+la réponse reçue, dans un fichier pour Excel.
 
 ## Réessayer les candidatures échouées
 

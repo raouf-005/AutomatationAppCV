@@ -160,7 +160,7 @@ async def state():
                     "found_today": sum(r["new"] for r in db.coverage_today()
                                        if r["source"] not in SITES and r["source"] != "alertes e-mail")},
         "total_applied": db.q("SELECT COUNT(*) n FROM offers WHERE status='applied'")[0]["n"],
-        "failed_today": len(pipeline.failed_offers(1)), "retry_waiting": len(RETRY),
+        "failed_today": len(pipeline.failed_offers(1)), "retry_waiting": len(RETRY), "hot_replies": hot_replies(),
     }
 
 
@@ -346,7 +346,20 @@ async def replies():
     for r in db.q("SELECT site, key, note, created FROM pending WHERE kind='reply' ORDER BY id DESC LIMIT 40"):
         d = json.loads(r["note"] or "{}")
         out.append({"kind": r["site"], "key": r["key"], "date": r["created"], "company": d.get("company") or d.get("who", ""),
-                    "title": d.get("title", ""), "subject": d.get("subject", "")})
+                    "title": d.get("title", ""), "subject": d.get("subject", ""), "account": d.get("account", ""),
+                    "link": d.get("link", ""), "excerpt": d.get("excerpt", "")})
+    return out
+
+
+def hot_replies() -> list:
+    """Offres et propositions d'échange des 7 derniers jours : mises en avant dans la carte « Aujourd'hui »."""
+    since = (dt.date.today() - dt.timedelta(days=6)).isoformat()
+    out = []
+    for r in db.q("SELECT site, note, created FROM pending WHERE kind='reply' AND site IN ('offre','entretien') AND created >= ? "
+                  "ORDER BY id DESC LIMIT 10", (since,)):
+        d = json.loads(r["note"] or "{}")
+        out.append({"kind": r["site"], "date": r["created"], "company": d.get("company") or d.get("who", ""),
+                    "subject": d.get("subject", ""), "link": d.get("link", ""), "account": d.get("account", "")})
     return out
 
 

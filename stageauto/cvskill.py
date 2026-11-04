@@ -95,11 +95,22 @@ def _last_line(txt: str) -> str:
 
 
 def summary(errs: str, n: int = 220) -> str:
-    """Erreurs lisibles en une ligne : la cause d'une trace Python (sa dernière ligne), sinon les premières erreurs."""
+    """Erreurs lisibles en une ligne : la cause d'une trace Python (sa dernière ligne), la première erreur LaTeX
+    (« ! … »), sinon les premières erreurs."""
     if "Traceback (most recent call last)" in (errs or ""):
         return _last_line(errs)[:n]
     lines = [l.strip() for l in (errs or "").splitlines() if l.strip()]
+    bang = [l for l in lines if l.startswith("! ")]
+    if bang:
+        files = [l.split(" : ")[0].lstrip("✗ ").strip() for l in lines if "erreur LaTeX" in l]
+        return (f"erreur LaTeX ({', '.join(files)}) : {bang[0]}")[:n]
     return (" | ".join(lines[:3]))[:n] or "erreur inconnue"
+
+
+def _latex_only(errs: str) -> bool:
+    """build.py n'a échoué qu'à la compilation (aucune règle du skill en cause) : souvent l'installation LaTeX."""
+    lines = [l for l in (errs or "").splitlines() if l.strip()]
+    return bool(lines) and all("erreur LaTeX" in l or l.strip().startswith(("! ", "l.")) for l in lines)
 
 
 def _build_full(w: Path, out: Path) -> tuple[bool, str, str]:
@@ -112,7 +123,8 @@ def _build_full(w: Path, out: Path) -> tuple[bool, str, str]:
     except subprocess.TimeoutExpired:
         return False, "", "délai dépassé (MiKTeX télécharge peut-être des paquets)"
     log_txt = r.stdout + r.stderr
-    errs = [l.strip() for l in log_txt.splitlines() if "ERREUR" in l or l.startswith("✗")]
+    # « ✗ fichier : erreur LaTeX » suivi des lignes « ! … » et « l.42 … » de pdflatex : la vraie cause
+    errs = [l.strip() for l in log_txt.splitlines() if "ERREUR" in l or l.startswith("✗") or l.strip().startswith(("! ", "l."))]
     if r.returncode and "Traceback (most recent call last)" in log_txt:
         return False, "\n".join(errs), _last_line(log_txt)[:300]
     return r.returncode == 0, "\n".join(errs)[:3000] or log_txt[-1500:], ""
@@ -203,6 +215,7 @@ def generate(offer: dict) -> dict:
     warnings = []
     for attempt in range(2):
         _write(w, d)
+        lite_done = False
         if full:
             ok, errs, crash = _build_full(w, out)
             if crash:
@@ -211,7 +224,18 @@ def generate(offer: dict) -> dict:
                 if not crash.startswith("délai"):
                     _BROKEN["full"] = crash
                 full = False
-        if not full:
+            elif not ok and _latex_only(errs):
+                # pdflatex lancé par build.py échoue (polices du skill introuvables par MiKTeX…) : même .tex compilé par
+                # StageAuto (carte des polices chargée explicitement), avec les contrôles du skill
+                ok2, errs2 = _build_lite(w, out, d.get("kw", []))
+                log(f"build.py : {summary(errs)} — compilation par StageAuto : {'réussie' if ok2 else summary(errs2)}")
+                lite_done = True
+                if ok2:
+                    _BROKEN["full"] = "erreur LaTeX dans build.py ; compilation de StageAuto utilisée"
+                    full, ok, errs = False, True, ""
+                else:
+                    errs = errs2 or errs
+        if not full and not lite_done:
             ok, errs = _build_lite(w, out, d.get("kw", []))
         if ok:
             break

@@ -582,12 +582,18 @@ def track_replies(g: dict) -> int:
                 hit = r
                 break
         if hit:
-            db.set_data(hit["key"], reponse=ev["kind"], reponse_le=db.now(), reponse_sujet=ev["subject"][:160])
+            db.set_data(hit["key"], reponse=ev["kind"], reponse_le=db.now(), reponse_sujet=ev["subject"][:160],
+                        reponse_lien=ev.get("link", ""))
         db.x("INSERT INTO pending(kind, site, key, note, created) VALUES('reply', ?, ?, ?, ?)",
              (ev["kind"], hit["key"] if hit else "", json.dumps({**ev, "company": hit["company"] if hit else "",
                                                                   "title": hit["title"] if hit else ""}, ensure_ascii=False), db.now()))
-        if ev["kind"] == "entretien":
-            push(f"Réponse à une candidature : {hit['company'] if hit else ev['who']}", ev["subject"][:160])
+        who = hit["company"] if hit else ev["who"]
+        box = f" (boîte {ev['account']})" if ev.get("account") else ""
+        if ev["kind"] == "offre":
+            push(f"Offre de stage reçue : {who}", f"{ev['subject'][:150]}{box} — réponds-leur vite")
+        elif ev["kind"] == "entretien":
+            push(f"Échange / entretien proposé : {who}",
+                 f"{ev['subject'][:120]}{box}" + (f" — choisis un créneau : {ev['link']}" if ev.get("link") else " — propose tes disponibilités"))
         n += 1
     return n
 
