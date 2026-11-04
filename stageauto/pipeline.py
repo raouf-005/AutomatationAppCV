@@ -80,6 +80,7 @@ async def check_connections(browser, ids):
                 ok, why = await site.login_state(tab)
                 why = f"après connexion automatique ({r['status']}) : {why}"
             res[sid], info[sid] = ok, why
+            await tab._cursor(*tab.pos, label=f"{site.name} : {'connecté ✓' if ok else 'non connecté' if ok is False else 'pas sûr'}")
             log(f"connexion {site.name} : {'oui' if ok else 'NON' if ok is False else 'pas sûr'} — {why}")
         except Exception as e:
             log(f"connexion {sid} : {e.__class__.__name__}")

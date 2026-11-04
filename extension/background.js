@@ -5,8 +5,9 @@
 const URL_WS = 'ws://127.0.0.1:8765/ext';
 let ws = null;
 let wins = null;          // voie -> id de fenêtre
-const initialTabs = {};   // voie -> onglet vide créé avec la fenêtre
 const attached = new Set();
+const HOME = chrome.runtime.getURL('lane.html');  // onglet d'accueil épinglé : garde la fenêtre ouverte entre deux passages
+const isHome = (t) => (t.url || t.pendingUrl || '').startsWith(HOME);
 
 function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 
@@ -79,14 +80,15 @@ async function ensureWindow(lane) {
     try { await chrome.windows.get(wins[lane]); return wins[lane]; } catch (e) { delete wins[lane]; }
   }
   const off = 40 * Number(lane);
+  const url = `${HOME}?lane=${lane}`;
   let w;
   try {
-    w = await chrome.windows.create({url: 'about:blank', focused: false, width: 1280, height: 860, left: 40 + off, top: 30 + off});
+    w = await chrome.windows.create({url, focused: false, width: 1280, height: 860, left: 40 + off, top: 30 + off});
   } catch (e) {  // petit écran : Chrome choisit lui-même la position
-    w = await chrome.windows.create({url: 'about:blank', focused: false});
+    w = await chrome.windows.create({url, focused: false});
   }
+  if (w.tabs && w.tabs[0]) chrome.tabs.update(w.tabs[0].id, {pinned: true}).catch(() => {});
   wins[lane] = w.id;
-  initialTabs[lane] = w.tabs && w.tabs[0] ? w.tabs[0].id : null;
   await chrome.storage.session.set({wins});
   return w.id;
 }
@@ -97,7 +99,7 @@ async function ourTabs() {
   for (const [lane, id] of Object.entries(wins)) {
     try {
       for (const t of await chrome.tabs.query({windowId: id}))
-        out.push({tabId: t.id, url: t.url, title: t.title, active: t.active, opener: t.openerTabId, lane: Number(lane)});
+        if (!isHome(t)) out.push({tabId: t.id, url: t.url, title: t.title, active: t.active, opener: t.openerTabId, lane: Number(lane)});
     } catch (e) { /* fenêtre fermée */ }
   }
   return out;
@@ -123,17 +125,21 @@ async function handle(m) {
       const lane = String(m.lane || 0);
       const w = await ensureWindow(lane);
       const t = await chrome.tabs.create({windowId: w, url: m.url || 'about:blank', active: true});
-      const init = initialTabs[lane];
-      if (init && init !== t.id) { chrome.tabs.remove(init).catch(() => {}); initialTabs[lane] = null; }
       return {tabId: t.id};
     }
     case 'tabs.list': return await ourTabs();
     case 'tabs.close': await chrome.tabs.remove(m.tabId); return true;
     case 'tabs.activate': await chrome.tabs.update(m.tabId, {active: true}); return true;
-    case 'window.show': {
-      const w = await ensureWindow(m.lane || 0);
-      await chrome.windows.update(w, {focused: true, state: 'normal'});
-      return true;
+    case 'window.show': {  // « Voir Chrome » : fenêtres StageAuto au premier plan
+      await loadWins();
+      const lanes = m.lane === 'all' ? Object.keys(wins) : [String(m.lane || 0)];
+      if (!lanes.length) lanes.push('0');
+      for (const lane of lanes) {
+        const w = await ensureWindow(lane);
+        const info = await chrome.windows.get(w);
+        await chrome.windows.update(w, info.state === 'minimized' ? {state: 'normal', focused: true} : {focused: true});
+      }
+      return lanes.length;
     }
     case 'cdp': {
       await attach(m.tabId);

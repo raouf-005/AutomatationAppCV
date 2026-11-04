@@ -75,6 +75,19 @@ Application Windows qui fait, deux fois par jour, la routine de candidature de s
 - **Avant de postuler** : pas de doublon (même offre sur plusieurs sites), au plus 3 offres par entreprise et par jour, et
   aucune réponse sensible.
 
+## Regarder l'application travailler
+
+- **Curseur vert** dans les fenêtres StageAuto de ton Chrome. Il reste affiché d'une page à l'autre et porte une étiquette
+  de ce qu'il fait : « Ouverture : linkedin.com », « Offre : … », « Lecture : … », « Saisie : Prénom », « Fichier : CV… »,
+  « Clic : Suivant ».
+- **Mode spectateur** (Réglages, activé par défaut) : le curseur glisse jusqu'à chaque champ avant de le remplir et parcourt
+  les listes d'offres et les annonces en faisant défiler la page. C'est un peu plus lent (quelques secondes par
+  formulaire) ; décoche-le pour la vitesse maximale.
+- **Fenêtres de travail** : une par voie (lecture des offres, candidatures LinkedIn, autres sites). Chacune garde un petit
+  onglet d'accueil épinglé et reste ouverte entre les passages : place-la une fois pour toutes, par exemple sur un second
+  écran. Le bouton **« Voir Chrome »** du tableau de bord les met au premier plan.
+- Ta vraie souris reste libre : le curseur vert est dessiné dans la page, il ne prend pas le contrôle de ta souris.
+
 ## Mémoire des sites et courbe d'apprentissage
 
 - Après chaque candidature réussie, l'application **mémorise la méthode du site** : boutons pour ouvrir le formulaire

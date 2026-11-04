@@ -64,6 +64,7 @@ DEFAULT_SETTINGS = {
     "linkedin_real_chrome_only": True,  # LinkedIn uniquement via ton vrai Chrome (extension), jamais le Chrome dédié
     "human_mode": "linkedin",         # souris/clavier humains : linkedin | all | off
     "show_cursor": True,              # curseur visible dans la page pendant que l'application agit
+    "spectator_mode": True,           # le curseur glisse, parcourt les pages et annonce ce qu'il fait (un peu plus lent)
     "use_memory": True,               # rejouer les méthodes mémorisées avant d'appeler l'IA
     "llm_provider": "anthropic",      # anthropic | openai_compatible
     "llm_fallback": True,             # l'autre fournisseur prend le relais si le premier échoue

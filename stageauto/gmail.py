@@ -28,6 +28,7 @@ async def check(browser):
     try:
         await tab.wait_for("() => document.querySelectorAll('tr.zA').length || /accounts\\.google/.test(location.host)"
                            " || /Aucun message|No messages/.test(document.body.innerText)", timeout=12)
+        await tab.tour("tr.zA", "E-mail", 4)
         if "accounts.google.com" in (await tab.url()):
             res["login"] = True
             return res

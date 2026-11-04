@@ -50,6 +50,7 @@ a{color:var(--accent)}
   <span class="pill" id="phase"><span class="dot" id="phdot"></span><span id="phtxt">…</span></span>
   <span class="pill muted" id="watchtxt" title="Veille : vérifications fréquentes pour postuler parmi les premiers"></span>
   <span style="flex:1"></span>
+  <button onclick="showBrowser()" title="Met les fenêtres StageAuto de Chrome au premier plan pour regarder le curseur">Voir Chrome</button>
   <button id="quickbtn" onclick="api('/api/run?mode=quick','POST')" title="Nouvelles offres seulement, candidature immédiate">Vérifier maintenant</button>
   <button class="primary" id="runbtn" onclick="api('/api/run','POST')">Passage complet</button>
   <button onclick="api('/api/stop','POST')">Arrêter</button>
@@ -150,6 +151,7 @@ a{color:var(--accent)}
           <label class="f"><span><input type="checkbox" id="s_linkedin_real_chrome_only"> LinkedIn uniquement via mon vrai Chrome</span></label>
           <label class="f">Souris et clavier humains<select id="s_human_mode"><option value="linkedin">Sur LinkedIn</option><option value="all">Partout</option><option value="off">Jamais (plus rapide)</option></select></label>
           <label class="f"><span><input type="checkbox" id="s_show_cursor"> Afficher le curseur dans la page pendant que l'application agit</span></label>
+          <label class="f"><span><input type="checkbox" id="s_spectator_mode"> Mode spectateur : le curseur glisse, parcourt les offres et annonce chaque action (un peu plus lent)</span></label>
           <label class="f">Effort de l'agent (low = rapide et économique)<select id="s_agent_effort"><option>low</option><option>medium</option><option>high</option></select></label>
           <label class="f">Sujet ntfy.sh pour les notifications téléphone (facultatif)<input type="text" id="s_ntfy_topic"></label>
           <label class="f">Index du compte Gmail dans Chrome (u/0, u/1…)<input type="number" id="s_gmail_index"></label>
@@ -229,6 +231,10 @@ async function refresh() {
     <button class="primary" onclick="api('/api/review/${encodeURIComponent(k)}?action=submit','POST')">Envoyer</button>
     <button onclick="api('/api/review/${encodeURIComponent(k)}?action=discard','POST')">Abandonner</button></div>`).join('');
   $('#log').textContent = d.log.join('\n'); $('#summary').textContent = st.summary || '';
+}
+async function showBrowser() {
+  const r = await api('/api/show_browser', 'POST');
+  if (r && !r.ok) alert(r.error || 'Impossible d\'afficher les fenêtres.');
 }
 async function checkConn() {
   const b = $('#checkbtn'); b.disabled = true; b.textContent = 'Vérification…';

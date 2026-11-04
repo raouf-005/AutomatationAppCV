@@ -241,6 +241,18 @@ async def open_login(site: str):
     return {"ok": True}
 
 
+@app.post("/api/show_browser")
+async def show_browser():
+    """« Voir Chrome » : met les fenêtres StageAuto de ton Chrome au premier plan."""
+    if cdp.BRIDGE.ws:
+        try:
+            n = await cdp.BRIDGE.call("window.show", lane="all", timeout=15)
+            return {"ok": True, "windows": n}
+        except Exception as e:
+            return {"ok": False, "error": f"Chrome n'a pas pu afficher les fenêtres ({e})"}
+    return {"ok": False, "error": "L'extension StageAuto Bridge n'est pas connectée : clique sur son icône dans Chrome puis « Reconnecter »."}
+
+
 @app.post("/api/check_connections")
 async def check_conn():
     s = load_settings()

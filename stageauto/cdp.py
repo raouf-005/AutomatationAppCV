@@ -135,7 +135,9 @@ RECT_JS = r"""
   let x = r.left + r.width / 2, y = r.top + r.height / 2;
   let w = target.ownerDocument.defaultView;
   while (w.frameElement) { const fr = w.frameElement.getBoundingClientRect(); x += fr.left; y += fr.top; w = w.parent; }
-  return {x, y, w: r.width, h: r.height, tag: el.tagName, type: el.type || '', checked: !!el.checked};
+  const name = (el.getAttribute('aria-label') || (el.labels && el.labels[0] && el.labels[0].innerText) || el.innerText ||
+    el.placeholder || el.value || el.name || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  return {x, y, w: r.width, h: r.height, tag: el.tagName, type: el.type || '', checked: !!el.checked, name};
 }
 """
 
@@ -187,17 +189,57 @@ KEYS = {"Enter": (13, "\r"), "Tab": (9, ""), "Escape": (27, ""), "Backspace": (8
 
 # ------------------------------------------------------------------------------------------- Tab
 CURSOR_JS = r"""
-(p) => { const d = document; let c = d.getElementById('__sa_cursor');
-  if (!c) { c = d.createElement('div'); c.id = '__sa_cursor';
-    c.style.cssText = 'position:fixed;left:0;top:0;width:22px;height:22px;z-index:2147483647;pointer-events:none;will-change:transform';
-    c.innerHTML = '<svg width="22" height="22" viewBox="0 0 22 22"><path d="M2 2 L2 18 L7 13.5 L10.5 20.5 L13.5 19 L10 12 L17 12 Z" fill="#1f7a4d" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>';
-    (d.body || d.documentElement).appendChild(c); }
-  c.style.transform = `translate(${p.x - 2}px, ${p.y - 2}px)`;
-  if (p.click) { const r = d.createElement('div');
-    r.style.cssText = `position:fixed;left:${p.x - 12}px;top:${p.y - 12}px;width:24px;height:24px;border-radius:50%;border:2px solid #1f7a4d;z-index:2147483646;pointer-events:none;transition:transform .45s,opacity .45s`;
-    d.documentElement.appendChild(r); requestAnimationFrame(() => { r.style.transform = 'scale(1.9)'; r.style.opacity = '0'; });
-    setTimeout(() => r.remove(), 500); } }
+(p) => {
+  if (window.top !== window) return;  // un seul curseur, dans la page principale
+  const draw = () => {
+    const d = document; let c = d.getElementById('__sa_cursor');
+    if (!c) {
+      c = d.createElement('div'); c.id = '__sa_cursor';
+      c.style.cssText = 'position:fixed;left:0;top:0;width:22px;height:22px;z-index:2147483647;pointer-events:none;will-change:transform';
+      c.innerHTML = '<svg width="22" height="22" viewBox="0 0 22 22" style="filter:drop-shadow(0 1px 2px rgba(0,0,0,.35))">' +
+        '<path d="M2 2 L2 18 L7 13.5 L10.5 20.5 L13.5 19 L10 12 L17 12 Z" fill="#1f7a4d" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>' +
+        '<span style="position:absolute;left:20px;top:17px;white-space:nowrap;max-width:320px;overflow:hidden;text-overflow:ellipsis;' +
+        'font:600 12px/1.25 system-ui,Segoe UI,sans-serif;color:#fff;background:#1f7a4d;border-radius:6px;padding:3px 8px;' +
+        'box-shadow:0 2px 8px rgba(0,0,0,.25);opacity:0;transition:opacity .2s"></span>';
+      (d.body || d.documentElement).appendChild(c);
+    }
+    c.style.transition = p.ms ? `transform ${p.ms}ms cubic-bezier(.25,.1,.25,1)` : 'none';
+    c.style.transform = `translate(${p.x - 2}px, ${p.y - 2}px)`;
+    const l = c.querySelector('span');
+    if (l && p.label !== undefined && p.label !== null) {
+      l.textContent = p.label; l.style.opacity = p.label ? '1' : '0';
+      clearTimeout(window.__saLabelT);
+      if (p.label) window.__saLabelT = setTimeout(() => { l.style.opacity = '0'; }, 2600);
+    }
+    if (p.click) {
+      const r = d.createElement('div');
+      r.style.cssText = `position:fixed;left:${p.x - 12}px;top:${p.y - 12}px;width:24px;height:24px;border-radius:50%;border:2px solid #1f7a4d;z-index:2147483646;pointer-events:none;transition:transform .45s,opacity .45s`;
+      d.documentElement.appendChild(r);
+      requestAnimationFrame(() => { r.style.transform = 'scale(1.9)'; r.style.opacity = '0'; });
+      setTimeout(() => r.remove(), 500);
+    }
+    try { sessionStorage.setItem('__sa_pos', JSON.stringify([p.x, p.y])); } catch (e) {}
+  };
+  if (p.boot) {  // nouvelle page : le curseur réapparaît là où il était
+    try { const q = JSON.parse(sessionStorage.getItem('__sa_pos') || 'null'); if (q) { p.x = q[0]; p.y = q[1]; } } catch (e) {}
+    if (p.x === undefined) { p.x = innerWidth * 0.35; p.y = innerHeight * 0.3; }
+    if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', draw); return; }
+  }
+  draw();
+}
 """
+
+# Parcours visible d'une page (mode spectateur) : le curseur passe sur les offres ou les lignes lues
+TOUR_JS = r"""(a) => { const els = [...document.querySelectorAll(a.sel)].filter(e => { const r = e.getBoundingClientRect();
+    return r.width > 30 && r.height > 8 && getComputedStyle(e).visibility !== 'hidden'; });
+  const step = Math.max(1, Math.floor(els.length / a.max)); const pick = [];
+  for (let i = 0; i < els.length && pick.length < a.max; i += step) pick.push(els[i]);
+  window.__saTour = pick; return pick.length; }"""
+TOUR_STEP_JS = r"""(i) => { const e = (window.__saTour || [])[i]; if (!e || !e.isConnected) return null;
+  e.scrollIntoView({block: 'center', behavior: 'smooth'}); return true; }"""
+TOUR_RECT_JS = r"""(i) => { const e = (window.__saTour || [])[i]; if (!e) return null; const r = e.getBoundingClientRect();
+  return {x: r.left + Math.min(r.width * 0.25, 140), y: r.top + Math.min(r.height / 2, 24),
+          t: (e.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 38)}; }"""
 
 
 def _bezier(p0, p3, n):
@@ -225,18 +267,55 @@ class Tab:
         self.id = tid
         self.last_url = ""
         self.pos = (random.uniform(200, 600), random.uniform(150, 400))
+        self._boot = False
 
     def human(self) -> bool:
         """Souris et clavier « humains » : sur LinkedIn par défaut (réglage human_mode : linkedin / all / off)."""
         mode = load_settings().get("human_mode", "linkedin")
         return mode == "all" or (mode == "linkedin" and "linkedin.com" in (self.last_url or ""))
 
-    async def _cursor(self, x, y, click=False):
+    @staticmethod
+    def spectator() -> bool:
+        """Mode spectateur : le curseur glisse, parcourt les pages et annonce ce qu'il fait (un peu plus lent)."""
+        st = load_settings()
+        return bool(st.get("show_cursor", True) and st.get("spectator_mode", True))
+
+    async def _cursor(self, x, y, click=False, ms=0, label=None):
         if load_settings().get("show_cursor", True):
+            arg = {"x": x, "y": y, "click": click, "ms": ms}
+            if label is not None and self.spectator():
+                arg["label"] = label
             try:
-                await self.eval(CURSOR_JS, {"x": x, "y": y, "click": click}, timeout=5)
+                await self.eval(CURSOR_JS, arg, timeout=5)
             except Exception:
                 pass
+
+    async def _ensure_boot(self):
+        """Le curseur est redessiné automatiquement sur chaque nouvelle page de cet onglet."""
+        if self._boot or not load_settings().get("show_cursor", True):
+            return
+        self._boot = True
+        try:
+            await self.send("Page.addScriptToEvaluateOnNewDocument", {"source": "(" + CURSOR_JS + ')({"boot": true})'})
+        except Exception:
+            pass
+
+    async def tour(self, selector: str, label="Lecture", max_points=5):
+        """Mode spectateur : le curseur parcourt quelques éléments de la page (offres, lignes de l'annonce) en la faisant défiler."""
+        if not self.spectator():
+            return
+        try:
+            n = await self.eval(TOUR_JS, {"sel": selector, "max": max_points}, timeout=5) or 0
+            for i in range(n):
+                if not await self.eval(TOUR_STEP_JS, i, timeout=5):
+                    continue
+                await asyncio.sleep(0.3)
+                r = await self.eval(TOUR_RECT_JS, i, timeout=5)
+                if r:
+                    await self.move(r["x"], r["y"], label=f"{label} : {r['t']}" if r.get("t") else label)
+                await asyncio.sleep(0.15)
+        except Exception:
+            pass
 
     async def send(self, method, params=None):
         return await self.browser.cdp(self.id, method, params or {})
@@ -297,11 +376,14 @@ class Tab:
 
     async def goto(self, url, timeout=40):
         self.last_url = url
+        await self._ensure_boot()
         r = await self.send("Page.navigate", {"url": url})
         if r.get("errorText"):
             log(f"navigation : {r['errorText']} ({url[:70]})")
         await self.wait_ready(timeout)
         await self.refuse_cookies()
+        host = re.sub(r"^https?://(www\.)?([^/]+).*", r"\2", url)
+        await self._cursor(*self.pos, label=f"Ouverture : {host[:40]}")
 
     async def url(self):
         try:
@@ -326,25 +408,40 @@ class Tab:
             self.last_url = snap["url"]
         return snap
 
-    async def move(self, x, y):
-        """Déplacement de la souris : trajectoire courbe à vitesse variable en mode humain, direct sinon."""
+    async def move(self, x, y, label=None):
+        """Déplacement de la souris : trajectoire courbe à vitesse variable en mode humain ; glissement fluide du curseur
+        en mode spectateur ; saut direct sinon (le plus rapide)."""
+        dist = ((x - self.pos[0]) ** 2 + (y - self.pos[1]) ** 2) ** 0.5
         if self.human():
-            dist = ((x - self.pos[0]) ** 2 + (y - self.pos[1]) ** 2) ** 0.5
             n = int(min(38, max(10, dist / 22)))
             total = min(0.95, 0.22 + dist / 1600) * random.uniform(0.85, 1.2)
             for i, (px, py) in enumerate(_bezier(self.pos, (x, y), n)):
                 await self.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": px, "y": py})
                 if i % 3 == 0 or i == n - 1:
-                    await self._cursor(px, py)
+                    await self._cursor(px, py, ms=int(total / n * 3000), label=label if i == 0 else None)
                 await asyncio.sleep(total / n)
+        elif self.spectator():
+            ms = int(min(480, 140 + dist * 0.35))
+            await self._cursor(x, y, ms=ms, label=label)
+            await asyncio.sleep(ms / 1000)
+            await self.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
         else:
             await self.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
             await self._cursor(x, y)
         self.pos = (x, y)
 
-    async def _mouse(self, x, y, clicks=1):
+    async def _goto_el(self, ref, label):
+        """Le curseur va sur l'élément avant d'agir (visible en mode spectateur et en mode humain)."""
+        if not (self.spectator() or self.human()):
+            return None
+        r = await self.eval(RECT_JS, ref)
+        if r and not r.get("error"):
+            await self.move(r["x"], r["y"], label=label.format(name=r.get("name") or ""))
+        return r
+
+    async def _mouse(self, x, y, clicks=1, label=None):
         human = self.human()
-        await self.move(x, y)
+        await self.move(x, y, label=label)
         await asyncio.sleep(random.uniform(0.08, 0.22) if human else 0.05)
         await self.send("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": clicks})
         await asyncio.sleep(random.uniform(0.05, 0.13) if human else 0.04)
@@ -362,7 +459,7 @@ class Tab:
             x += random.uniform(-0.22, 0.22) * min(r["w"], 160)
             y += random.uniform(-0.2, 0.2) * min(r["h"], 40)
         await asyncio.sleep(0.15)
-        await self._mouse(x, y)
+        await self._mouse(x, y, label=f"Clic : {r.get('name')}" if r.get("name") else "Clic")
         return r
 
     async def _type_human(self, text):
@@ -389,6 +486,8 @@ class Tab:
                 await self.click(ref)
             except BrowserError:
                 pass
+        else:
+            await self._goto_el(ref, "Saisie : {name}")
         f = await self.eval(FOCUS_JS, ref)
         if not f or f.get("error"):
             raise BrowserError((f or {}).get("error", "élément introuvable"))
@@ -408,12 +507,13 @@ class Tab:
         return got
 
     async def select(self, ref, value):
+        await self._goto_el(ref, f"Choix : {str(value)[:30]}")
         return await self.eval(SELECT_JS, {"ref": ref, "value": value})
 
     async def check(self, ref, checked=True):
         r = await self.eval(RECT_JS, ref)
         if r and not r.get("error") and bool(r.get("checked")) != bool(checked):
-            await self._mouse(r["x"], r["y"])
+            await self._mouse(r["x"], r["y"], label=f"{'Coche' if checked else 'Décoche'} : {r.get('name') or ''}")
             await asyncio.sleep(0.2)
         return True
 
@@ -421,6 +521,7 @@ class Tab:
         p = Path(path)
         if not p.exists():
             raise BrowserError(f"fichier absent : {p.name}")
+        await self._goto_el(ref, f"Fichier : {p.name[:34]}")
         r = await self.send("Runtime.evaluate", {"expression": f"({FILE_INPUT_JS})({json.dumps(ref)})", "returnByValue": False})
         obj = (r.get("result") or {}).get("objectId")
         if not obj:
@@ -457,10 +558,13 @@ class Tab:
                                                              "deltaY": 120 if dy > 0 else -120})
                 await asyncio.sleep(random.uniform(0.06, 0.16))
             return
-        await self.eval("(dy) => { const d = [...document.querySelectorAll('[role=dialog], [aria-modal=true]')].pop();"
+        smooth = "smooth" if self.spectator() else "instant"
+        await self.eval("(a) => { const d = [...document.querySelectorAll('[role=dialog], [aria-modal=true]')].pop();"
                         " const s = d ? ([...d.querySelectorAll('*')].find(e => e.scrollHeight > e.clientHeight + 20 &&"
                         " /auto|scroll/.test(getComputedStyle(e).overflowY)) || d) : null;"
-                        " if (s) s.scrollBy(0, dy); else window.scrollBy(0, dy); }", dy)
+                        " (s || window).scrollBy({top: a.dy, behavior: a.b}); }", {"dy": dy, "b": smooth})
+        if smooth == "smooth":
+            await asyncio.sleep(0.35)
 
     async def screenshot(self, scale=0.5) -> bytes | None:
         try:
@@ -591,11 +695,10 @@ class ExtensionBrowser(Browser):
         return await BRIDGE.call("cdp", tabId=tid, method=method, params=params) or {}
 
     async def new_tab(self, url=None, lane=0):
-        r = await BRIDGE.call("tabs.create", url=url or "about:blank", lane=lane)
+        r = await BRIDGE.call("tabs.create", url="about:blank", lane=lane)
         t = Tab(self, r["tabId"])
-        if url:
-            await t.wait_ready()
-            await t.refuse_cookies()
+        if url:  # navigation après coup : le curseur persistant est installé avant le chargement de la page
+            await t.goto(url)
         return t
 
     async def tab_ids(self):

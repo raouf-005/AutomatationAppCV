@@ -177,8 +177,10 @@ class Agent:
     async def run_tool(self, name, a):
         tab = self.tab
         if name == "read_page":
+            await tab._cursor(*tab.pos, label="Lecture de la page")
             return self._view(await tab.snapshot(page=a.get("scope") == "page"))
         if name == "find":
+            await tab._cursor(*tab.pos, label=f"Recherche : {a['query'][:30]}")
             snap = await tab.snapshot(page=True, max=400, textMax=20000)
             self.refs = {it["ref"]: it for it in snap["items"]}
             words = [w for w in forms.nrm(a["query"]).split() if len(w) > 2]
