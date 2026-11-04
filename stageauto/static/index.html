@@ -104,21 +104,16 @@ a{color:var(--accent)}
     <div data-p="reglages" hidden>
       <div class="grid">
         <div>
-          <h2>Clé API Claude</h2>
-          <label class="f">Clé (stockée dans le Gestionnaire d'identification Windows)<input type="password" id="apikey" placeholder="sk-ant-…"></label>
-          <button onclick="saveKey()">Enregistrer la clé</button>
-          <h2 style="margin-top:18px">Fournisseur d'IA</h2>
-          <label class="f">Fournisseur principal<select id="s_llm_provider"><option value="anthropic">Claude (Anthropic)</option>
-            <option value="openai_compatible">Autre fournisseur, ta clé (compatible OpenAI)</option></select></label>
-          <label class="f">Service<select id="s_foreign_preset"><option value="openai">OpenAI</option><option value="mistral">Mistral</option>
-            <option value="gemini">Google Gemini</option><option value="deepseek">DeepSeek</option><option value="openrouter">OpenRouter</option>
-            <option value="groq">Groq</option><option value="">Autre (URL ci-dessous)</option></select></label>
-          <label class="f">URL de l'API (facultatif, remplace le service)<input type="text" id="s_foreign_base_url" placeholder="https://…/v1"></label>
-          <label class="f">Modèle (nom exact chez le fournisseur)<input type="text" id="s_foreign_model"></label>
-          <label class="f">Clé API du fournisseur externe<input type="password" id="foreignkey" placeholder="clé…"></label>
-          <button onclick="saveForeignKey()">Enregistrer la clé externe</button>
-          <label class="f"><span><input type="checkbox" id="s_llm_fallback"> Si le fournisseur principal échoue, utiliser l'autre</span></label>
-          <p class="muted">Pense à cliquer « Enregistrer les réglages » pour le fournisseur et le modèle.</p>
+          <h2>Intelligence artificielle</h2>
+          <p class="muted">Claude, ChatGPT, Gemini, Kimi, Qwen, DeepSeek, Mistral, un modèle local (Ollama, LM Studio)
+            ou <b>Claude Code</b> avec ton abonnement Claude (sans clé API). Les clés sont gardées dans le Gestionnaire
+            d'identification Windows.</p>
+          <label class="f">Fournisseur principal<select id="s_llm_provider" onchange="renderAIForm()"></select></label>
+          <div id="aiform"></div>
+          <label class="f"><span><input type="checkbox" id="s_llm_fallback"> Si le fournisseur principal échoue, essayer les autres fournisseurs prêts</span></label>
+          <div class="row" style="border:0"><button class="primary" onclick="saveAndTestAI()">Enregistrer et tester l'IA</button>
+            <span class="muted" id="aitest"></span></div>
+          <div id="ailist" style="margin-top:6px"></div>
           <h2 style="margin-top:18px">Identifiants des sites</h2>
           <p class="muted">Importer un export CSV d'un coffre Proton Pass contenant uniquement les sites d'emploi (le fichier est supprimé après import). Les mots de passe ne sont jamais montrés à Claude.</p>
           <input type="file" id="proton" accept=".csv"> <button onclick="importProton()">Importer Proton Pass</button>
@@ -201,10 +196,10 @@ async function refresh() {
     : 'Veille désactivée';
   $('#extdot').className = 'dot ' + (d.extension ? 'ok' : (d.backend === 'extension' ? 'bad' : ''));
   $('#exttxt').textContent = d.extension ? 'connectée' : (d.backend === 'extension' ? 'non connectée' : 'non utilisée');
-  const foreign = d.provider === 'openai_compatible';
-  $('#provtxt').textContent = foreign ? 'fournisseur externe (clé personnelle)' : 'Claude';
-  const keyok = foreign ? d.foreign_key : d.api_key;
-  $('#keydot').className = 'dot ' + (keyok ? 'ok' : 'bad'); $('#keytxt').textContent = keyok ? 'clé enregistrée' : 'clé à ajouter (Réglages)';
+  const ai = d.ai || {};
+  $('#provtxt').textContent = ai.ready ? ai.order[0] + (ai.order[0] !== ai.primary ? ' (relais)' : '') : ai.primary || '—';
+  $('#keydot').className = 'dot ' + (ai.ready ? 'ok' : 'bad');
+  $('#keytxt').textContent = ai.ready ? 'prête' : 'à configurer (Réglages)';
   $('#conns').innerHTML = Object.entries(d.sites).map(([k, n]) => {
     const known = k in (st.connections || {}); const c = st.connections[k];
     const cls = c === true ? 'ok' : c === false ? 'bad' : (known ? 'warn' : '');
@@ -222,6 +217,7 @@ async function refresh() {
      <span class="muted">${o.delay_min != null ? `· ${o.delay_min} min après détection` : ''}</span></span>${verif(o.verified)}
      <a href="${esc(o.url)}" target="_blank">offre</a> ${pdfLinks(o.folder)}</div>`).join('') || '<span class="muted">Aucune candidature aujourd\'hui.</span>';
   const al = [];
+  if (d.ai && !d.ai.ready) al.push(`Aucune IA prête (${d.ai.why}) : va dans Réglages → Intelligence artificielle. Choisis « Claude Code » si Claude Code est installé sur ce PC (pas de clé), ou ajoute une clé (Claude, ChatGPT, Gemini…).`);
   if (st.needs_login && st.needs_login.length) al.push(`Connexion requise : ${st.needs_login.map(k => SITES[k] || k).join(', ')} — connecte-toi puis relance (les offres sont réessayées).`);
   (d.alerts || []).slice(-3).reverse().forEach(a => al.push(`${a.t} — <b>${esc(a.title)}</b> ${esc(a.body)}`));
   $('#alerts').innerHTML = al.map(a => `<div class="alert" style="margin-bottom:8px">${a.includes('<b>') ? a : esc(a)}</div>`).join('');
@@ -274,6 +270,7 @@ async function loadNotes() {
 }
 const LISTS = ['keywords', 'linkedin_searches', 'smartrecruiters_companies'];
 async function loadSettings() {
+  loadAI();
   S = await api('/api/settings');
   for (const [k, v] of Object.entries(S)) {
     const el = $('#s_' + k); if (!el) continue;
@@ -301,10 +298,56 @@ async function saveSettings() {
     else b[k] = el.value;
   }
   b.sites_enabled = Object.fromEntries([...document.querySelectorAll('[data-site]')].map(c => [c.dataset.site, c.checked]));
+  for (const id of ['s_model', 's_custom_base_url', 's_claude_code_path']) { const el = $('#' + id); if (el) b[id.slice(2)] = el.value.trim(); }
+  if ($('#ai_model')) b.models = {...(S.models || {}), [$('#s_llm_provider').value]: $('#ai_model').value.trim()};
   await api('/api/settings', 'POST', b); loadSettings();
 }
-async function saveKey() { const r = await api('/api/apikey', 'POST', {key: $('#apikey').value}); $('#apikey').value = ''; alert(r && r.ok ? 'Clé enregistrée' : 'Clé supprimée'); }
-async function saveForeignKey() { const r = await api('/api/foreign_key', 'POST', {key: $('#foreignkey').value}); $('#foreignkey').value = ''; alert(r && r.ok ? 'Clé externe enregistrée' : 'Clé externe supprimée'); }
+let AI = null;
+async function loadAI() {
+  AI = await api('/api/ai'); if (!AI) return;
+  const sel = $('#s_llm_provider'), cur = sel.value || AI.primary;
+  sel.innerHTML = Object.entries(AI.providers).map(([k, p]) => `<option value="${k}">${esc(p.label)}</option>`).join('');
+  sel.value = AI.providers[cur] ? cur : AI.primary;
+  renderAIForm();
+  $('#ailist').innerHTML = '<h2 style="margin-top:12px">État des fournisseurs</h2>' + Object.entries(AI.providers).map(([k, p]) =>
+    `<div class="row"><span class="dot ${p.ok ? 'ok' : ''}"></span><span class="grow">${esc(p.label)}${AI.order[0] === k ? ' <b>(utilisé)</b>' : ''}</span>
+     <span class="muted" style="font-size:12px">${esc(p.why)}</span></div>`).join('');
+}
+function renderAIForm() {
+  const k = $('#s_llm_provider').value, p = AI && AI.providers[k]; if (!p) return;
+  const keyField = (opt) => `<label class="f">Clé API${opt ? ' (facultative)' : ''}<input type="password" id="ai_key" autocomplete="new-password"
+      placeholder="${p.has_key ? 'clé enregistrée — laisse vide pour la garder' : 'colle la clé ici'}"></label>`;
+  let h = '';
+  if (p.kind === 'claude_code') {
+    h = `<p class="muted">Utilise la commande <code>claude</code> de ce PC avec ton abonnement Claude : installe Claude Code et
+      connecte-toi une fois en tapant <code>claude</code> dans un terminal. Chaque appel prend quelques secondes de plus qu'avec une clé API
+      et compte dans les limites de ton abonnement.</p>
+      <label class="f">Modèle (facultatif, ex. sonnet ou opus)<input type="text" id="ai_model" value="${esc(p.model)}"></label>
+      <label class="f">Chemin de la commande claude (facultatif)<input type="text" id="s_claude_code_path" value="${esc(S.claude_code_path || '')}"></label>`;
+  } else if (p.kind === 'anthropic') {
+    h = `<label class="f">Modèle<input type="text" id="s_model" value="${esc(S.model || '')}"></label>` + keyField(false) +
+      `<p class="muted">Clé à créer sur console.anthropic.com (facturée à l'usage, distincte de l'abonnement Claude).</p>`;
+  } else {
+    h = (k === 'custom' ? `<label class="f">Adresse de l'API (se termine souvent par /v1)<input type="text" id="s_custom_base_url" value="${esc(S.custom_base_url || '')}"></label>`
+                        : `<p class="muted">Adresse : ${esc(p.url)}</p>`) +
+      `<label class="f">Modèle (nom exact chez le fournisseur)<input type="text" id="ai_model" value="${esc(p.model)}"></label>` +
+      (p.needs_key ? keyField(false) : keyField(true)) +
+      (['ollama', 'lmstudio'].includes(k) ? `<p class="muted">Lance d'abord ${k === 'ollama' ? 'Ollama' : 'LM Studio'} sur ce PC. Un petit modèle local remplit moins bien les formulaires qu'un grand modèle en ligne.</p>` : '');
+  }
+  $('#aiform').innerHTML = h;
+}
+async function saveAndTestAI() {
+  const k = $('#s_llm_provider').value, key = $('#ai_key') ? $('#ai_key').value.trim() : '';
+  if (key) await api(k === 'anthropic' ? '/api/apikey' : '/api/provider_key', 'POST', {provider: k, key});
+  await saveSettings();
+  await testAI(k);
+}
+async function testAI(k) {
+  $('#aitest').textContent = 'Test en cours…';
+  const r = await api('/api/test_ai', 'POST', {provider: k});
+  $('#aitest').textContent = r && r.ok ? `✓ ${AI.providers[k].label} répond (${r.seconds} s)` : `✗ ${r ? r.error : 'pas de réponse'}`;
+  await loadAI(); refresh();
+}
 async function saveCred() {
   await api('/api/cred', 'POST', {site: $('#credsite').value, user: $('#creduser').value, password: $('#credpwd').value});
   $('#creduser').value = $('#credpwd').value = ''; loadSettings();

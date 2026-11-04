@@ -2,15 +2,18 @@
 import asyncio
 import datetime as dt
 import json
+import os
 import random
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import cdp, db, pipeline, providers, vault
-from .config import CANDIDATURES, DATA, PKG, load_settings, save_settings
+from . import CODE, cdp, db, pipeline, providers, vault
+from .config import CANDIDATURES, DATA, IS_WIN, PKG, load_settings, save_settings
 from .notify import ALERTS, LOG, log
 from .sites import SITES
 
@@ -20,7 +23,11 @@ _task = None
 
 @app.on_event("startup")
 async def _startup():
+    providers.migrate_settings()
     db.import_seed()
+    n = db.requeue_ai_failures()
+    if n:
+        log(f"{n} offre(s) écartée(s) faute d'IA remises en attente")
     asyncio.create_task(scheduler())
 
 
@@ -116,11 +123,13 @@ async def state():
     st.pop("linkedin_last_search", None)
     st.pop("last_full_started", None)
     return {
-        "state": st, "extension": bool(cdp.BRIDGE.ws), "backend": s.get("browser_backend"),
+        "code": CODE, "state": st, "extension": bool(cdp.BRIDGE.ws), "backend": s.get("browser_backend"),
         "watch": {"enabled": s.get("watch_enabled", True), "interval": s.get("watch_interval_min", 30),
                   "hours": s.get("watch_hours")},
-        "api_key": bool(vault.get_api_key()), "foreign_key": bool(vault.get_foreign_key()),
-        "provider": s.get("llm_provider", "anthropic"), "counts": counts, "applied_today": applied_today,
+        "ai": {"ready": providers.ready(), "order": [providers.label(p) for p in providers.providers_in_order()],
+               "primary": providers.label(s.get("llm_provider", "anthropic")),
+               "why": providers.configured(s.get("llm_provider", "anthropic"))[1]},
+        "counts": counts, "applied_today": applied_today,
         "invites_today": db.invites_today(), "inmails_today": db.inmails_today(),
         "creds": vault.sites_with_creds(list(SITES) + ["gmail"]),
         "alerts": list(ALERTS)[-8:], "log": [l["t"] for l in list(LOG)[-120:]],
@@ -191,10 +200,27 @@ async def set_key(req: Request):
     return {"ok": bool(vault.get_api_key())}
 
 
-@app.post("/api/foreign_key")
-async def set_foreign_key(req: Request):
-    vault.set_foreign_key((await req.json()).get("key", "").strip())
-    return {"ok": bool(vault.get_foreign_key())}
+@app.get("/api/ai")
+async def ai_info():
+    return providers.describe()
+
+
+@app.post("/api/provider_key")
+async def set_provider_key(req: Request):
+    b = await req.json()
+    pid = b.get("provider", "")
+    if pid not in providers.PROVIDERS:
+        return {"ok": False}
+    vault.set_provider_key(pid, (b.get("key") or "").strip())
+    providers.reset()
+    return {"ok": True, "configured": providers.configured(pid)}
+
+
+@app.post("/api/test_ai")
+async def test_ai(req: Request):
+    b = await req.json()
+    pid = b.get("provider") or load_settings().get("llm_provider", "anthropic")
+    return await asyncio.to_thread(providers.test, pid)
 
 
 @app.get("/api/learning")
@@ -238,6 +264,32 @@ async def open_login(site: str):
             await cdp.BRIDGE.call("window.show")
         except Exception:
             pass
+    return {"ok": True}
+
+
+async def _exit_soon():
+    await asyncio.sleep(0.4)
+    try:
+        await cdp.reset_browser()
+    except Exception:
+        pass
+    os._exit(0)
+
+
+@app.post("/api/quit")
+async def quit_app():
+    """Arrêt de l'application (utilisé par StageAuto.bat quand une nouvelle version est installée)."""
+    asyncio.create_task(_exit_soon())
+    return {"ok": True}
+
+
+@app.post("/api/restart")
+async def restart_app():
+    """Bouton « Redémarrer » : relance l'application avec le code actuel des fichiers."""
+    flags = (0x00000008 | 0x00000200) if IS_WIN else 0  # processus détaché sous Windows
+    subprocess.Popen([sys.executable, "-m", "stageauto", "--restart", "--no-open"], cwd=str(PKG.parent),
+                     creationflags=flags, close_fds=True)
+    asyncio.create_task(_exit_soon())
     return {"ok": True}
 
 

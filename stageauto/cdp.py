@@ -522,22 +522,35 @@ class Tab:
         if not p.exists():
             raise BrowserError(f"fichier absent : {p.name}")
         await self._goto_el(ref, f"Fichier : {p.name[:34]}")
-        r = await self.send("Runtime.evaluate", {"expression": f"({FILE_INPUT_JS})({json.dumps(ref)})", "returnByValue": False})
-        obj = (r.get("result") or {}).get("objectId")
-        if not obj:
-            raise BrowserError("aucun champ de fichier près de cet élément")
-        try:
-            await self.send("DOM.setFileInputFiles", {"files": [str(p.resolve())], "objectId": obj})
-        except Exception as e:  # repli : DataTransfer (fichier injecté par JS)
-            log(f"setFileInputFiles refusé ({e}), repli DataTransfer")
-            b64 = base64.b64encode(p.read_bytes()).decode()
-            mime = mimetypes.guess_type(p.name)[0] or "application/pdf"
-            await self.send("Runtime.callFunctionOn", {"objectId": obj, "awaitPromise": True, "functionDeclaration":
-                "function(b64, name, mime){ const bin = atob(b64); const u = new Uint8Array(bin.length);"
-                " for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);"
-                " const dt = new DataTransfer(); dt.items.add(new File([u], name, {type: mime})); this.files = dt.files;"
-                " this.dispatchEvent(new Event('input', {bubbles: true})); this.dispatchEvent(new Event('change', {bubbles: true})); }",
-                "arguments": [{"value": b64}, {"value": p.name}, {"value": mime}]})
+        last = None
+        for attempt in range(3):  # une reconnexion de l'extension invalide les références d'objets : on recommence
+            r = await self.send("Runtime.evaluate", {"expression": f"({FILE_INPUT_JS})({json.dumps(ref)})", "returnByValue": False})
+            obj = (r.get("result") or {}).get("objectId")
+            if not obj:
+                raise BrowserError("aucun champ de fichier près de cet élément")
+            try:
+                await self.send("DOM.setFileInputFiles", {"files": [str(p.resolve())], "objectId": obj})
+                break
+            except Exception as e:
+                last = e
+                if attempt < 2 and re.search(r"object|context|Detached|not attached|different extension", str(e), re.I):
+                    await asyncio.sleep(0.3)
+                    continue
+                try:  # repli : DataTransfer (fichier injecté par JS)
+                    log(f"setFileInputFiles refusé ({str(e)[:80]}), repli DataTransfer")
+                    b64 = base64.b64encode(p.read_bytes()).decode()
+                    mime = mimetypes.guess_type(p.name)[0] or "application/pdf"
+                    await self.send("Runtime.callFunctionOn", {"objectId": obj, "awaitPromise": True, "functionDeclaration":
+                        "function(b64, name, mime){ const bin = atob(b64); const u = new Uint8Array(bin.length);"
+                        " for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);"
+                        " const dt = new DataTransfer(); dt.items.add(new File([u], name, {type: mime})); this.files = dt.files;"
+                        " this.dispatchEvent(new Event('input', {bubbles: true})); this.dispatchEvent(new Event('change', {bubbles: true})); }",
+                        "arguments": [{"value": b64}, {"value": p.name}, {"value": mime}]})
+                    break
+                except Exception as e2:
+                    last = e2
+                    if attempt >= 2:
+                        raise BrowserError(f"envoi du fichier impossible : {str(last)[:120]}")
         await asyncio.sleep(1.0)
         return True
 

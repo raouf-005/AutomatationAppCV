@@ -298,3 +298,16 @@ def delay_stats(days=14):
         res.append({"site": site, "n": s["n"], "delay_min": avg(s["delay"]), "age_at_apply_min": avg(s["age"]),
                     "verified": s["verified"]})
     return sorted(res, key=lambda r: -r["n"])
+
+
+def requeue_ai_failures() -> int:
+    """Offres écartées à tort parce que l'IA ne répondait pas (clé absente…) : remises en attente."""
+    cur = x("UPDATE offers SET status='pending_ai', reason='en attente de l''IA (clé API)' WHERE status IN ('ignored','error') "
+            "AND (reason LIKE '%skill indisponible%' OR reason LIKE '%adaptation impossible%' OR reason LIKE '%authentication%' "
+            "OR reason LIKE '%IA indisponible%' OR reason LIKE '%TypeError%' OR reason LIKE '%clé d''IA%')")
+    return cur.rowcount
+
+
+def pending_ai_offers(days=3):
+    since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    return [{**r, **json.loads(r["data"] or "{}")} for r in q("SELECT * FROM offers WHERE status='pending_ai' AND found_at >= ?", (since,))]

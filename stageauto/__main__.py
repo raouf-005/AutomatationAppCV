@@ -51,6 +51,8 @@ def already_running() -> bool:
 
 def port_free() -> bool:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if not IS_WIN:  # comme le serveur web : les connexions qui se terminent (TIME_WAIT) ne bloquent pas le port
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         s.bind(("127.0.0.1", PORT))
         return True
@@ -58,6 +60,64 @@ def port_free() -> bool:
         return False
     finally:
         s.close()
+
+
+def running_code():
+    try:
+        return json.loads(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/state", timeout=3).read()).get("code")
+    except Exception:
+        return None
+
+
+def wait_port_free(seconds) -> bool:
+    for _ in range(int(seconds * 4)):
+        if port_free():
+            return True
+        time.sleep(0.25)
+    return port_free()
+
+
+def kill_port_owner():
+    """Ancienne instance sans commande d'arrêt : on arrête le processus Python qui écoute sur le port."""
+    if not IS_WIN:
+        return
+    flags = 0x08000000
+    pids = set()
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                              f"(Get-NetTCPConnection -LocalPort {PORT} -State Listen).OwningProcess"],
+                             capture_output=True, text=True, timeout=20, creationflags=flags).stdout
+        pids |= {x.strip() for x in out.split() if x.strip().isdigit()}
+    except Exception:
+        pass
+    if not pids:
+        try:
+            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=20, creationflags=flags).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[1].endswith(f":{PORT}") and parts[2] in ("0.0.0.0:0", "[::]:0"):
+                    pids.add(parts[-1])
+        except Exception:
+            pass
+    for pid in pids:
+        try:
+            info = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True,
+                                  timeout=20, creationflags=flags).stdout.lower()
+            if "python" in info:
+                subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=20, creationflags=flags)
+        except Exception:
+            pass
+
+
+def stop_old_instance() -> bool:
+    try:
+        post("/api/quit")
+    except Exception:
+        pass
+    if wait_port_free(12):
+        return True
+    kill_port_owner()
+    return wait_port_free(10)
 
 
 def post(path):
@@ -84,7 +144,18 @@ def main():
     ap = argparse.ArgumentParser(prog="stageauto")
     ap.add_argument("--run", action="store_true", help="démarrer un passage maintenant")
     ap.add_argument("--no-open", action="store_true", help="ne pas ouvrir le tableau de bord")
+    ap.add_argument("--restart", action="store_true", help="(interne) attendre l'arrêt de l'instance précédente")
     a = ap.parse_args()
+    from . import CODE
+    if a.restart:
+        wait_port_free(30)
+    elif already_running() and running_code() != CODE:
+        # nouvelle version décompressée par-dessus : l'ancienne instance est arrêtée, la nouvelle démarre
+        print("Nouvelle version de StageAuto : redémarrage", file=sys.stderr)
+        if not stop_old_instance():
+            alert("Une ancienne version de StageAuto tourne encore et n'a pas pu être arrêtée.\n"
+                  "Ouvre le Gestionnaire des tâches, termine « pythonw.exe », puis relance StageAuto.bat.")
+            return 1
     if already_running():
         if a.run:
             print(post("/api/run"))

@@ -16,7 +16,7 @@ import re
 import shutil
 from pathlib import Path
 
-from . import cdp, cvskill, db, gmail, linkedin_contacts, priority, replay, vault
+from . import cdp, cvskill, db, gmail, linkedin_contacts, priority, providers, replay, vault
 from .agent import Agent
 from .config import CANDIDATURES, DOMAIN_NEG, DOMAIN_POS, WORK, load_settings
 from .forms import NeedLogin, nrm
@@ -83,7 +83,7 @@ async def check_connections(browser, ids):
             await tab._cursor(*tab.pos, label=f"{site.name} : {'connecté ✓' if ok else 'non connecté' if ok is False else 'pas sûr'}")
             log(f"connexion {site.name} : {'oui' if ok else 'NON' if ok is False else 'pas sûr'} — {why}")
         except Exception as e:
-            log(f"connexion {sid} : {e.__class__.__name__}")
+            log(f"connexion {sid} : {e.__class__.__name__} {str(e)[:150]}")
             res[sid], info[sid] = None, f"vérification impossible ({e.__class__.__name__}) : site essayé quand même"
         finally:
             await tab.close()
@@ -291,7 +291,7 @@ async def stream(browser, offers, summary, resume=()):
             try:
                 await SITES[o["site"]].details(tab, o)
             except Exception as e:
-                log(f"détail {o['key']} : {e.__class__.__name__}")
+                log(f"détail {o['key']} : {e.__class__.__name__} {str(e)[:150]}")
             finally:
                 await tab.close()
         if o.get("already"):
@@ -316,6 +316,10 @@ async def stream(browser, offers, summary, resume=()):
                 log(f"CV {o['company']} : {e.__class__.__name__} {str(e)[:120]}")
                 db.upsert_offer({**o, "status": "error", "reason": f"génération : {e.__class__.__name__}"})
                 return
+        if r.get("retry"):  # l'IA n'a pas répondu (clé, crédit, réseau) : offre gardée pour le prochain passage
+            db.upsert_offer({**o, "status": "pending_ai", "reason": "en attente de l'IA : " + (r.get("reason") or "")[:180]})
+            summary["pending_ai"] = summary.get("pending_ai", 0) + 1
+            return
         if not r.get("eligible"):
             db.upsert_offer({**o, "status": "ignored", "reason": "non éligible : " + (r.get("reason") or "")[:200]})
             return
@@ -456,12 +460,23 @@ async def run_pass(trigger="manuel", mode="full"):
         if missing and not quick:
             push("Connecte-toi à : " + ", ".join(missing),
                  "Dans Chrome (ou bouton « Se connecter » du tableau de bord) – je postule dès que c'est fait.")
+        if not providers.ready():
+            # sans IA, ni CV ni candidature : inutile de chercher (les offres seront trouvées au passage suivant)
+            summary["no_ai"] = True
+            if STATE.get("no_ai_alert") != db.today():
+                STATE["no_ai_alert"] = db.today()
+                push("StageAuto attend une IA", "Ajoute une clé (Claude, ChatGPT, Gemini…) ou choisis « Claude Code » dans Réglages : "
+                                                "sans IA, je ne peux pas écrire les CV.")
+            phase("en attente d'une IA", "Réglages → Fournisseur d'IA")
+            return
         hours = window_hours(quick)
         ok_ids = [k for k, ok in conn.items() if ok is not False]  # « pas sûr » : essayé quand même
         if quick and "linkedin" in ok_ids and not linkedin_due():
             ok_ids.remove("linkedin")  # LinkedIn : une recherche par heure au plus en veille
         phase("recherche", f"offres des {hours:.1f} dernières heures ({', '.join(ok_ids)})")
         offers = select_new(await gather_offers(browser, ok_ids, hours, quick))
+        keys = {o["key"] for o in offers}
+        offers += [o for o in db.pending_ai_offers() if o["key"] not in keys and o.get("site") in SITES]  # en attente de l'IA
         resume = pending_ready()
         phase("candidatures", f"{len(offers)} nouvelles offres, {len(resume)} CV prêts en attente")
         await stream(browser, offers, summary, resume)
@@ -558,6 +573,10 @@ def recap(s) -> str:
         L.append("3) E-mails à traiter : " + "; ".join(acts[:8]))
     if g.get("confirmed"):
         L.append("Adresses confirmées : " + "; ".join(g["confirmed"]))
+    if s.get("no_ai"):
+        L.append("Aucune IA configurée : ajoute une clé ou choisis « Claude Code » dans Réglages (passage arrêté avant la recherche).")
+    if s.get("pending_ai"):
+        L.append(f"{s['pending_ai']} offre(s) en attente de l'IA, reprises au prochain passage.")
     if s["missing"]:
         L.append("Connexion manquante : " + ", ".join(s["missing"]))
     if s["login"]:

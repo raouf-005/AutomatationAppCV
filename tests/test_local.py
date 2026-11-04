@@ -14,8 +14,11 @@ os.environ.setdefault("STAGEAUTO_DATA", tempfile.mkdtemp())
 from stageauto import agent, cdp, config, forms, providers  # noqa: E402
 
 s = config.load_settings()
-s.update(browser_backend="playwright", headless=True, chrome_path=os.environ.get("STAGEAUTO_CHROME", ""))
+s.update(browser_backend="playwright", headless=True, chrome_path=os.environ.get("STAGEAUTO_CHROME", ""),
+         llm_provider="anthropic", llm_fallback=False, spectator_mode=False)
 config.save_settings(s)
+from stageauto import vault  # noqa: E402
+vault.set_api_key("sk-test")  # clé fictive : le modèle est simulé ci-dessous
 TMP = Path(os.environ["STAGEAUTO_DATA"])
 (TMP / "cv.pdf").write_bytes(b"%PDF-1.4\n%test\n")
 (TMP / "lm.pdf").write_bytes(b"%PDF-1.4\n%test\n")

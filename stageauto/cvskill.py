@@ -143,7 +143,10 @@ def _write(w: Path, d: dict):
 
 
 def generate(offer: dict) -> dict:
-    """Renvoie {ok, eligible, reason, cv, lm, lettre_txt, message_court, poste, dossier, lang, warnings}."""
+    """Renvoie {ok, eligible, reason, cv, lm, lettre_txt, message_court, poste, dossier, lang, warnings}.
+    retry=True : l'IA n'a pas pu répondre (clé, crédit, réseau) ; l'offre est gardée pour plus tard."""
+    if not providers.ready():
+        return {"ok": False, "eligible": None, "retry": True, "reason": "aucune clé d'IA configurée"}
     if load_settings().get("cv_mode") == "rapide":  # modèles + adaptation courte : ~4 fois plus rapide que le skill complet
         return _fallback(offer, "mode CV rapide")
     user = (f"OFFRE (source : {offer.get('site')}, URL : {offer.get('url')})\nEntreprise : {offer.get('company')}\n"
@@ -207,10 +210,10 @@ def _fallback(offer, why):
     log(f"repli modèles : {why}")
     try:
         t = llm.tailor(offer)
-    except Exception as e:
-        return {"ok": False, "eligible": False, "reason": f"{why} ; adaptation impossible ({e.__class__.__name__})"}
+    except Exception as e:  # problème d'IA (clé, crédit, réseau) : l'offre sera reprise, pas ignorée
+        return {"ok": False, "eligible": None, "retry": True, "reason": f"{why} ; IA indisponible ({e.__class__.__name__})"}
     if t is None:
-        return {"ok": False, "eligible": False, "reason": why}
+        return {"ok": False, "eligible": None, "retry": True, "reason": why}
     if not t.get("eligible"):
         return {"ok": False, "eligible": False, "reason": t.get("reason", "non éligible")}
     o = t

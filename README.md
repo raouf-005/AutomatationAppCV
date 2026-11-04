@@ -101,13 +101,25 @@ Application Windows qui fait, deux fois par jour, la routine de candidature de s
   des 5 dernières, le nombre d'étapes d'IA et la part rejouée sans IA. On y voit aussi les méthodes, les réponses apprises
   et les notes de l'agent.
 
-## Fournisseur d'IA : Claude ou ta propre clé
+## Intelligence artificielle : au choix
 
-Par défaut, l'application utilise Claude. Dans **Réglages → Fournisseur d'IA**, tu peux choisir un autre service
-compatible OpenAI avec ta clé : OpenAI, Mistral, Google Gemini, DeepSeek, OpenRouter, Groq, ou une URL libre. Indique
-le nom exact du modèle chez ce fournisseur. Avec « Si le fournisseur principal échoue, utiliser l'autre », l'autre
-service prend le relais si une clé est refusée, si le crédit est épuisé ou si le service est indisponible. La qualité
-des CV et de l'agent dépend du modèle choisi.
+Dans **Réglages → Intelligence artificielle**, choisis le fournisseur principal :
+
+| Fournisseur | Ce qu'il faut |
+|---|---|
+| **Claude Code** (ton abonnement Claude) | Claude Code installé sur ce PC, connexion faite une fois (taper `claude` dans un terminal). Aucune clé. Plus lent qu'une clé API ; compte dans les limites de ton abonnement. |
+| Claude (API Anthropic) | Clé créée sur console.anthropic.com (facturée à l'usage, distincte de l'abonnement Claude). |
+| ChatGPT (OpenAI), Gemini (Google), Kimi (Moonshot), Qwen (Alibaba Cloud), DeepSeek, Mistral, OpenRouter, Groq | Clé du service + nom exact du modèle. |
+| Modèle local : Ollama ou LM Studio | Le logiciel lancé sur ce PC + nom du modèle. Pas de clé. Un petit modèle remplit moins bien les formulaires. |
+| Autre service compatible OpenAI | Adresse de l'API (…/v1), modèle, clé si besoin. |
+
+- « Enregistrer et tester l'IA » vérifie le fournisseur en une question. La liste « État des fournisseurs » dit ce qui
+  manque pour chacun.
+- Avec « Si le fournisseur principal échoue… » coché, les autres fournisseurs prêts prennent le relais (clé refusée,
+  crédit épuisé, service indisponible). Claude Code est utilisé automatiquement s'il est installé et qu'aucune clé n'est
+  configurée.
+- Sans aucune IA prête, l'application ne cherche pas d'offres (elle ne pourrait pas écrire les CV) et te le signale.
+  Les offres déjà trouvées sont gardées « en attente de l'IA » et reprises dès qu'une IA est prête.
 
 ## LinkedIn : uniquement ton vrai Chrome, souris et clavier humains
 
@@ -161,6 +173,14 @@ des CV et de l'agent dépend du modèle choisi.
   restriction du compte, sans le supprimer.
 - **Coût** : compter grossièrement quelques dizaines de centimes de dollar par candidature (CV + agent). La facture
   Anthropic fait foi.
+- **Après une mise à jour** : décompresse par-dessus le dossier puis double-clique `StageAuto.bat`. Si une ancienne version
+  tourne encore en arrière-plan, elle est arrêtée et la nouvelle démarre. Le bouton « Redémarrer » des Réglages fait de même.
+- **« Cannot access a chrome-extension:// URL of different extension »** : une autre extension (gestionnaire de mots de passe
+  comme Proton Pass, correcteur…) insère son cadre dans la page, et Chrome bloque alors StageAuto. Depuis la version 1.4.0
+  de l'extension, ces cadres sont retirés dans les fenêtres StageAuto seulement (tes autres fenêtres ne changent pas).
+  Recharge l'extension dans chrome://extensions après la mise à jour : Chrome demande l'accès aux sites, à accepter.
+- **Barre « StageAuto Bridge a démarré le débogage de ce navigateur »** : c'est normal, elle signale que l'application pilote
+  ses fenêtres. Ne clique pas « Annuler » : cela coupe le pilotage en cours.
 - **Un site connecté apparaît « non connecté »** : clique « Vérifier les connexions ». Sous chaque site s'affiche ce qui a
   été vu (ex. « session LinkedIn active (cookie li_at) », « redirigé vers la page de connexion »). Point orange = pas sûr :
   le site est utilisé quand même. Seul un rouge sûr fait sauter un site. Si tout est rouge, l'extension n'est sans doute

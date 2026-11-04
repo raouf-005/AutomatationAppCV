@@ -1,10 +1,39 @@
 {
   "manifest_version": 3,
   "name": "StageAuto Bridge",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Relie ton Chrome à l'application StageAuto (127.0.0.1) pour qu'elle postule avec tes sessions déjà ouvertes.",
-  "permissions": ["debugger", "tabs", "windows", "alarms", "storage"],
-  "background": {"service_worker": "background.js"},
-  "action": {"default_title": "StageAuto Bridge", "default_popup": "popup.html"},
-  "icons": {"128": "icon128.png"}
+  "permissions": [
+    "alarms",
+    "debugger",
+    "scripting",
+    "storage",
+    "tabs",
+    "windows"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "StageAuto Bridge",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "128": "icon128.png"
+  },
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "guard.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
 }

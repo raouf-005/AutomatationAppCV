@@ -105,6 +105,32 @@ async function ourTabs() {
   return out;
 }
 
+// Retire, dans un onglet StageAuto, les cadres d'autres extensions (y compris dans les racines fantômes fermées)
+function sweepForeignFrames(mine) {
+  const shadowOf = (e) => (chrome.dom && chrome.dom.openOrClosedShadowRoot) ? chrome.dom.openOrClosedShadowRoot(e) : e.shadowRoot;
+  let n = 0;
+  const sweep = (root) => {
+    root.querySelectorAll('iframe').forEach(f => {
+      if (/^chrome-extension:\/\//.test(f.src || '') && !(f.src || '').startsWith(mine)) { f.remove(); n++; }
+    });
+    root.querySelectorAll('*').forEach(e => { const sr = shadowOf(e); if (sr) sweep(sr); });
+  };
+  sweep(document);
+  return n;
+}
+
+async function guardTab(tabId) {
+  try {
+    const r = await chrome.scripting.executeScript({target: {tabId}, func: sweepForeignFrames, args: [chrome.runtime.getURL('')]});
+    return (r && r[0] && r[0].result) || 0;
+  } catch (e) { return 0; }
+}
+
+async function isOurWindow(windowId) {
+  await loadWins();
+  return Object.values(wins).includes(windowId);
+}
+
 async function attach(tabId) {
   if (attached.has(tabId)) return;
   try { await chrome.debugger.attach({tabId}, '1.3'); }
@@ -142,13 +168,28 @@ async function handle(m) {
       return lanes.length;
     }
     case 'cdp': {
-      await attach(m.tabId);
-      // l'onglet passe au premier plan de SA fenêtre seulement pour la souris, le clavier et les captures
-      if (/^Input\.|^Page\.captureScreenshot/.test(m.method)) {
-        const t = await chrome.tabs.get(m.tabId).catch(() => null);
-        if (t && !t.active) await chrome.tabs.update(m.tabId, {active: true}).catch(() => {});
+      // Chrome refuse ou coupe le pilotage quand une autre extension insère un cadre dans la page : on retire ces
+      // cadres, on se rattache et on recommence (sauf clavier/souris coupés en plein milieu, pour ne pas doubler un clic).
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await attach(m.tabId);
+          // l'onglet passe au premier plan de SA fenêtre seulement pour la souris, le clavier et les captures
+          if (/^Input\.|^Page\.captureScreenshot/.test(m.method)) {
+            const t = await chrome.tabs.get(m.tabId).catch(() => null);
+            if (t && !t.active) await chrome.tabs.update(m.tabId, {active: true}).catch(() => {});
+          }
+          return await chrome.debugger.sendCommand({tabId: m.tabId}, m.method, m.params || {});
+        } catch (e) {
+          const msg = String((e && e.message) || e);
+          const blocked = /different extension|not attached|Cannot attach/i.test(msg);
+          const cut = /Detached/i.test(msg) && !/^Input\./.test(m.method);
+          if (attempt >= 3 || !(blocked || cut)) throw e;
+          attached.delete(m.tabId);
+          await chrome.debugger.detach({tabId: m.tabId}).catch(() => {});
+          await guardTab(m.tabId);
+          await new Promise(r => setTimeout(r, 250 * (attempt + 1)));
+        }
       }
-      return await chrome.debugger.sendCommand({tabId: m.tabId}, m.method, m.params || {});
     }
     default: throw new Error('commande inconnue ' + m.cmd);
   }
@@ -164,7 +205,11 @@ chrome.tabs.onUpdated.addListener((id, info, tab) => {
   if (info.status === 'complete' && (tab.url || '').startsWith('http://127.0.0.1:8765')) connectNow();
 });
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
-  if (msg === 'reconnect') { connectNow(); reply(true); }
+  if (msg === 'reconnect') { connectNow(); reply(true); return; }
+  if (msg && msg.q === 'isStageAutoTab') {  // guard.js : ne protéger que les onglets des fenêtres StageAuto
+    isOurWindow(sender.tab && sender.tab.windowId).then(reply);
+    return true;
+  }
 });
 chrome.runtime.onStartup.addListener(connectNow);
 chrome.runtime.onInstalled.addListener(connectNow);

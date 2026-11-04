@@ -113,3 +113,17 @@ def get_foreign_key():
 
 def set_foreign_key(v):
     _set("foreign_api_key", v or None)
+
+
+def get_provider_key(pid: str):
+    """Clé API d'un fournisseur d'IA (ChatGPT, Gemini, Kimi, Qwen…), dans le Gestionnaire d'identification Windows."""
+    if pid == "anthropic":
+        return get_api_key()
+    return _get("key:" + pid)
+
+
+def set_provider_key(pid: str, v):
+    if pid == "anthropic":
+        set_api_key(v)
+    else:
+        _set("key:" + pid, v or None)

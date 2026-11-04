@@ -408,11 +408,11 @@ class Agent:
                     out, err = f"Erreur : {e}", True
                 except Exception as e:
                     out, err = f"Erreur : {e.__class__.__name__} {e}"[:300], True
-                results.append({"id": c.id, "content": out, "is_error": err})
+                results.append({"id": c.id, "name": c.name, "content": out, "is_error": err})
                 if c.name == "finish":
                     break
             done = {r["id"] for r in results}
-            results += [{"id": c.id, "content": "ignoré (tâche terminée)"} for c in st.calls if c.id not in done]
+            results += [{"id": c.id, "name": c.name, "content": "ignoré (tâche terminée)"} for c in st.calls if c.id not in done]
             conv.results(results)
         res = self.result or {"status": "blocked", "reason": f"pas terminé en {self.steps} étapes", "method_note": ""}
         res["steps"] = self.steps
