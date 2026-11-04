@@ -80,7 +80,7 @@ a{color:var(--accent)}
   <section class="card">
     <nav class="tabs" id="tabs">
       <button data-t="offres" class="on">Offres</button><button data-t="contacts">Contacts LinkedIn</button>
-      <button data-t="regles">Règles</button><button data-t="reponses">Réponses</button><button data-t="sources">Sources</button>
+      <button data-t="profil">Mon profil</button><button data-t="fichiers">Mes fichiers</button><button data-t="regles">Règles</button><button data-t="reponses">Réponses</button><button data-t="sources">Sources</button>
       <button data-t="journal">Journal</button><button data-t="notes">Mémoire et apprentissage</button><button data-t="reglages">Réglages</button>
     </nav>
     <div data-p="offres">
@@ -95,6 +95,24 @@ a{color:var(--accent)}
       <div class="tablewrap"><table><thead><tr><th>Entreprise</th><th>Offre</th><th>Site</th><th>Statut</th><th>Détail</th><th>PDF</th><th></th></tr></thead><tbody id="otable"></tbody></table></div>
     </div>
     <div data-p="contacts" hidden><div class="tablewrap"><table><thead><tr><th>Date</th><th>Entreprise</th><th>Personne</th><th>Rôle</th><th>Statut</th></tr></thead><tbody id="ctable"></tbody></table></div></div>
+    <div data-p="profil" hidden>
+      <h2>Ce que l'application sait de toi</h2>
+      <p class="muted">Ces réponses sont les <b>seules</b> utilisées pour remplir les formulaires (fichier <span id="pf_file"></span>).
+        Modifie-les ici : c'est pris en compte tout de suite, l'ancienne version est gardée en .bak.</p>
+      <div id="pf_form" class="grid" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:4px 16px"></div>
+      <button class="primary" onclick="saveProfile()">Enregistrer le profil</button> <span class="muted" id="pf_msg"></span>
+      <h2 style="margin-top:18px">Profil du skill (contenu des CV et lettres)</h2>
+      <p class="muted">Expériences, projets, chiffres autorisés, outils interdits, certifications : la source unique utilisée par
+        l'IA pour écrire tes CV (fichier <span id="md_file"></span>).</p>
+      <textarea id="pf_md" style="width:100%;min-height:420px;font:12px ui-monospace,monospace"></textarea>
+      <button class="primary" onclick="saveProfileMd()">Enregistrer le profil du skill</button> <span class="muted" id="md_msg"></span>
+    </div>
+    <div data-p="fichiers" hidden>
+      <h2>Où sont tes CV et lettres</h2>
+      <div id="paths"></div>
+      <h2 style="margin-top:16px">Derniers dossiers</h2>
+      <div id="recentf" class="muted"></div>
+    </div>
     <div data-p="regles" hidden>
       <h2>Règles de candidature</h2>
       <p class="muted">Appliquées à chaque passage. Les interdits du profil (nationalité, habilitation, compte à créer, données
@@ -159,6 +177,8 @@ a{color:var(--accent)}
           <label class="f">Fournisseur principal<select id="s_llm_provider" onchange="renderAIForm()"></select></label>
           <div id="aiform"></div>
           <label class="f"><span><input type="checkbox" id="s_llm_fallback"> Si le fournisseur principal échoue, essayer les autres fournisseurs prêts</span></label>
+          <label class="f"><span><input type="checkbox" id="s_local_backup"> Dernier recours : modèle local Ollama sur ce PC (modèle choisi tout seul
+            parmi ceux installés ; installer Ollama puis <code>ollama pull qwen2.5:14b</code>)</span></label>
           <div class="row" style="border:0"><button class="primary" onclick="saveAndTestAI()">Enregistrer et tester l'IA</button>
             <span class="muted" id="aitest"></span></div>
           <div id="ailist" style="margin-top:6px"></div>
@@ -216,6 +236,15 @@ a{color:var(--accent)}
           <button class="primary" onclick="saveSettings()">Enregistrer les réglages</button>
         </div>
       </div>
+      <h2 style="margin-top:18px">Tous les paramètres (avancé)</h2>
+      <p class="muted">Chaque réglage de l'application, y compris ceux qui n'ont pas de case ci-dessus. Modifie le texte (format JSON)
+        puis enregistre ; une erreur de format est signalée sans rien changer.</p>
+      <textarea id="allsettings" style="width:100%;min-height:360px;font:12px ui-monospace,monospace"></textarea>
+      <div class="row" style="border:0"><button class="primary" onclick="saveAllSettings()">Enregistrer tous les paramètres</button>
+        <button onclick="loadAllSettings()">Recharger</button><span class="muted" id="allmsg"></span>
+      </div>
+      <div>
+      </div>
     </div>
   </section>
 </main>
@@ -234,6 +263,8 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
   if (b.dataset.t === 'notes') { loadNotes(); loadLearning(); } if (b.dataset.t === 'reglages') loadSettings();
   if (b.dataset.t === 'sources') loadSources(); if (b.dataset.t === 'reponses') loadReplies();
   if (b.dataset.t === 'regles') { $('#rulesmsg').textContent = ''; loadSettings(); }
+  if (b.dataset.t === 'profil') loadProfile(); if (b.dataset.t === 'fichiers') loadPaths();
+  if (b.dataset.t === 'reglages') loadAllSettings();
 });
 const VERIF = {page: 'confirmation affichée', linkedin: 'confirmée par LinkedIn', email: 'accusé de réception reçu', 'à vérifier': 'à vérifier'};
 function verif(v) { if (!v) return ''; const warn = v === 'à vérifier';
@@ -322,6 +353,45 @@ function retryNote(r, empty) {
   $('#retrymsg').textContent = $('#retrynote').textContent = msg;
   setTimeout(() => { if ($('#retrynote').textContent === msg) $('#retrynote').textContent = ''; }, 15000);
   refresh(); loadOffers();
+}
+let PF = {};
+const lab = k => k.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+async function loadProfile() {
+  const d = await api('/api/profile'); if (!d) return;
+  PF = d.profile; $('#pf_file').textContent = d.files.profile; $('#md_file').textContent = d.files.profil_md;
+  $('#pf_form').innerHTML = Object.entries(PF).map(([k, v]) => typeof v === 'string'
+    ? `<label class="f">${esc(lab(k))}<input type="text" data-pf="${esc(k)}" value="${esc(v)}"></label>`
+    : `<label class="f">${esc(lab(k))} <span class="muted">(JSON)</span><textarea data-pf="${esc(k)}" data-json="1" rows="4">${esc(JSON.stringify(v, null, 1))}</textarea></label>`).join('');
+  $('#pf_md').value = d.profil_md;
+}
+async function saveProfile() {
+  const p = {};
+  for (const el of document.querySelectorAll('[data-pf]')) {
+    if (el.dataset.json) { try { p[el.dataset.pf] = JSON.parse(el.value); } catch (e) { $('#pf_msg').textContent = '✗ format invalide : ' + el.dataset.pf; return; } }
+    else p[el.dataset.pf] = el.value;
+  }
+  const r = await api('/api/profile', 'POST', {profile: p}); $('#pf_msg').textContent = r && r.ok ? '✓ Profil enregistré' : '✗ échec';
+}
+async function saveProfileMd() {
+  const r = await api('/api/profile', 'POST', {profil_md: $('#pf_md').value}); $('#md_msg').textContent = r && r.ok ? '✓ Enregistré (utilisé dès le prochain CV)' : '✗ échec';
+}
+async function loadPaths() {
+  const d = await api('/api/paths'); if (!d) return;
+  const recent = d.recent || []; delete d.recent;
+  $('#paths').innerHTML = Object.entries(d).map(([k, v]) => `<div class="row"><span class="grow"><b>${esc(v.label)}</b><br>
+    <code style="font-size:12px">${esc(v.path)}</code>${v.pdf != null ? ` <span class="muted">· ${v.pdf} PDF</span>` : ''}</span>
+    <button onclick="openFolder('${k}')">Ouvrir</button></div>`).join('');
+  $('#recentf').innerHTML = recent.map(r => `<div class="row"><span class="grow">${esc(r.company)} — ${esc(r.title)} <span class="muted">(${esc(STATUS[r.status] || r.status)})</span><br>
+    <code style="font-size:12px">${esc(r.folder)}</code></span><a href="/files?path=${encodeURIComponent(r.folder)}" target="_blank">PDF</a></div>`).join('') || 'Aucun dossier pour l\'instant.';
+}
+async function openFolder(which) {
+  const r = await api('/api/open_folder', 'POST', {which});
+  if (r && !r.ok) alert(r.error + (r.path ? ' : ' + r.path : ''));
+}
+async function loadAllSettings() { const st = await api('/api/settings'); if (st) $('#allsettings').value = JSON.stringify(st, null, 2); $('#allmsg').textContent = ''; }
+async function saveAllSettings() {
+  let b; try { b = JSON.parse($('#allsettings').value); } catch (e) { $('#allmsg').textContent = '✗ format JSON invalide : ' + e.message; return; }
+  await api('/api/settings', 'POST', b); $('#allmsg').textContent = '✓ Paramètres enregistrés'; loadSettings();
 }
 async function loadOffers() {
   const rows = await api('/api/offers?status=' + $('#ofilter').value) || [];

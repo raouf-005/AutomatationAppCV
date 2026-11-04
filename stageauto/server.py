@@ -246,6 +246,83 @@ async def set_settings(req: Request):
     return s
 
 
+@app.get("/api/profile")
+async def get_profile():
+    """Ce que l'application sait de toi : profil des formulaires (profile.json) et profil du skill (profil.md)."""
+    from .config import PROFILE, SKILL_DIR
+    md = SKILL_DIR / "references" / "profil.md"
+    return {"profile": PROFILE, "profil_md": md.read_text(encoding="utf-8") if md.exists() else "",
+            "files": {"profile": str(_profile_path()), "profil_md": str(md)}}
+
+
+def _profile_path():
+    from .config import PERSONAL
+    return PERSONAL / "profile.json"
+
+
+@app.post("/api/profile")
+async def set_profile(req: Request):
+    """Enregistre le profil (copie de l'ancien en .bak) ; pris en compte tout de suite, sans redémarrer."""
+    from . import cvskill
+    from .config import PROFILE, SKILL_DIR
+    b = await req.json()
+    if isinstance(b.get("profile"), dict):
+        pf = _profile_path()
+        pf.parent.mkdir(parents=True, exist_ok=True)
+        if pf.exists():
+            pf.with_suffix(".json.bak").write_text(pf.read_text(encoding="utf-8"), encoding="utf-8")
+        pf.write_text(json.dumps(b["profile"], ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        PROFILE.clear()
+        PROFILE.update(b["profile"])
+    if isinstance(b.get("profil_md"), str) and b["profil_md"].strip():
+        md = SKILL_DIR / "references" / "profil.md"
+        if md.exists():
+            md.with_suffix(".md.bak").write_text(md.read_text(encoding="utf-8"), encoding="utf-8")
+        md.write_text(b["profil_md"], encoding="utf-8")
+        cvskill._SYS = None  # consignes du skill relues au prochain CV
+    log("profil mis à jour depuis le tableau de bord")
+    return {"ok": True}
+
+
+def _paths() -> dict:
+    from .config import LOG_PATH, PERSONAL
+    return {"cv_prepares": {"label": "CV et lettres préparés (un dossier par offre, PDF dans « out »)", "path": str(DATA / "work")},
+            "cv_envoyes": {"label": "CV et lettres envoyés (copie par candidature)", "path": str(CANDIDATURES / "envoyees")},
+            "candidatures": {"label": "Dossier Candidatures (certificats, envoyées)", "path": str(CANDIDATURES)},
+            "personnel": {"label": "Ton profil et ton skill (profile.json, skill/)", "path": str(PERSONAL)},
+            "donnees": {"label": "Données de l'application (base, réglages, journaux)", "path": str(DATA)},
+            "journal": {"label": "Journal détaillé", "path": str(LOG_PATH)}}
+
+
+@app.get("/api/paths")
+async def paths():
+    out = _paths()
+    for v in out.values():
+        p = Path(v["path"])
+        v["exists"] = p.exists()
+        v["pdf"] = len(list(p.rglob("*.pdf"))) if p.is_dir() else None
+    out["recent"] = [{"company": r["company"], "title": r["title"], "folder": r["folder"], "status": r["status"]}
+                     for r in db.q("SELECT company, title, folder, status FROM offers WHERE folder IS NOT NULL AND folder != '' "
+                                   "ORDER BY COALESCE(applied_at, found_at) DESC LIMIT 15")]
+    return out
+
+
+@app.post("/api/open_folder")
+async def open_folder(req: Request):
+    """Ouvre le dossier dans l'Explorateur Windows."""
+    b = await req.json()
+    p = Path(_paths().get(b.get("which", ""), {}).get("path") or b.get("path") or "")
+    allowed = [Path(v["path"]).resolve() for v in _paths().values()]
+    if not p or not any(str(p.resolve()).startswith(str(a)) for a in allowed):
+        return {"ok": False, "error": "dossier non autorisé"}
+    target = p if p.is_dir() else p.parent
+    target.mkdir(parents=True, exist_ok=True)
+    if IS_WIN:
+        os.startfile(str(target))  # noqa
+        return {"ok": True}
+    return {"ok": False, "path": str(target), "error": "ouverture possible seulement sous Windows"}
+
+
 @app.post("/api/apikey")
 async def set_key(req: Request):
     vault.set_api_key((await req.json()).get("key", "").strip())

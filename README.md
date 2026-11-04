@@ -127,6 +127,27 @@ l'aperçu. Un e-mail non lu est remis en « non lu » après lecture, pour ne pa
 sont pas prises pour des réponses. Le bouton **Exporter (CSV)** de l'onglet Offres donne toutes les candidatures, avec
 la réponse reçue, dans un fichier pour Excel.
 
+## Mon profil, mes fichiers, tous les paramètres
+
+- **Onglet Mon profil** : tout ce que l'application sait de toi, modifiable. En haut, les réponses des formulaires
+  (`personal/profile.json` : identité, contact, nationalité, disponibilité février 2027 et fin juillet 2027, formation
+  avec les années, langues, permis B, certifications, mobilité…) : ce sont les seules réponses utilisées. En bas, le
+  profil du skill (`references/profil.md` : expériences, projets, chiffres autorisés, outils interdits), source des CV.
+  Pris en compte tout de suite ; l'ancienne version est gardée en `.bak`.
+- **Onglet Mes fichiers** : où sont les CV et lettres, avec un bouton « Ouvrir » (Explorateur Windows) :
+  - préparés : `%LOCALAPPDATA%\StageAuto\work\<Entreprise_Sujet>\out\` (un dossier par offre) ;
+  - envoyés : `Téléchargements\Candidatures\envoyees\<Entreprise_Sujet>\` (copie de ce qui est parti) ;
+  - et les derniers dossiers, avec un lien vers leurs PDF.
+- **Réglages → Tous les paramètres** : chaque réglage de l'application en texte (JSON), y compris ceux sans case ;
+  une erreur de format est signalée sans rien changer.
+
+## Modèle local en dernier recours (Ollama)
+
+Coché par défaut (Réglages → IA) : si toutes les autres IA échouent ou sont en pause (limite atteinte), un modèle local
+Ollama prend le relais, toujours en dernier. Installe Ollama (ollama.com), puis dans un terminal `ollama pull qwen2.5:14b`
+(ou `qwen2.5:7b` si le PC a peu de mémoire). Le modèle est choisi tout seul parmi ceux installés ; aucun réglage à faire.
+Un petit modèle écrit moins bien les CV et remplit moins bien les formulaires : c'est un secours, pas un remplaçant.
+
 ## Règles (onglet Règles)
 
 Modifiables à tout moment, appliquées à chaque passage :

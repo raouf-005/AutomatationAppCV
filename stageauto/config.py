@@ -84,6 +84,7 @@ DEFAULT_SETTINGS = {
     "watch_hours": "08:00-22:00",
     "linkedin_watch_min": 60,         # LinkedIn : une recherche par heure au plus en veille
     "watch_sites": [],                # vide = tous les sites actifs
+    "local_backup": True,             # Ollama / LM Studio sur ce PC : dernier recours si toutes les autres IA échouent
     "rule_only_today": True,          # règles (onglet Règles) : offres publiées aujourd'hui seulement
     "rule_linkedin_first": True,      # LinkedIn d'abord
     "rule_cv_lang": True,             # CV en anglais si l'offre le demande (ou est en anglais), sinon en français

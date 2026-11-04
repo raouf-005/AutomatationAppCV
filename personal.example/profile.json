@@ -50,5 +50,16 @@
  "experience_annees": "",
  "mobilite": "",
  "visa_sponsorship": "",
- "relocate": ""
+ "relocate": "",
+ "permis": "",
+ "date_fin_iso": "",
+ "date_fin_fr": "",
+ "type_stage": "",
+ "annee_etudes": "",
+ "certifications": [
+  ""
+ ],
+ "certification_anglais": "",
+ "centres_interet": "",
+ "domaines_vises": ""
 }

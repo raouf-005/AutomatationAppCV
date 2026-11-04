@@ -90,6 +90,14 @@ INTERDITS (finish blocked, sans contourner) :
 Ne réponds jamais à une question par une compétence ou un fait absent du profil. Le succès d'une candidature se constate
 (message « candidature envoyée / merci », page de confirmation) avant finish applied."""
 
+_PROFILE_AT_IMPORT = json.dumps(PROFILE, ensure_ascii=False)
+
+
+def system() -> str:
+    """Consignes avec le profil actuel (modifiable dans l'onglet « Mon profil » sans redémarrer)."""
+    return SYSTEM.replace(_PROFILE_AT_IMPORT, json.dumps(PROFILE, ensure_ascii=False))
+
+
 SITE_HINTS = {
     "linkedin": "LinkedIn Candidature simplifiée : bouton « Candidature simplifiée » ; dans le dialogue : Suivant, CV "
                 "(« Importer le CV » puis upload cv ; la radio du nouveau CV est cochée d'office), lettre si demandée, questions, "
@@ -380,7 +388,7 @@ class Agent:
                  + ("MODE VALIDATION : remplis tout mais ne clique PAS l'envoi final ; appelle finish(status='ready').\n"
                     if not self.auto else "")
                  + "\nPage actuelle :\n" + self._view(first))
-        conv = providers.ToolConversation(SYSTEM, TOOLS, effort=s.get("agent_effort", "low"))
+        conv = providers.ToolConversation(system(), TOOLS, effort=s.get("agent_effort", "low"))
         conv.user(intro)
         t0 = time.time()
         nudged = False

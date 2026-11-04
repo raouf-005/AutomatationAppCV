@@ -76,7 +76,44 @@ def model_of(pid) -> str:
     s = load_settings()
     if pid == "anthropic":
         return s.get("model", "claude-opus-5-5")
-    return (s.get("models") or {}).get(pid, "") or ""
+    m = (s.get("models") or {}).get(pid, "") or ""
+    if not m and pid == "ollama" and s.get("local_backup", True):
+        m = ollama_auto_model()
+    return m
+
+
+LOCAL = ("ollama", "lmstudio")
+_OLLAMA = {"t": 0.0, "models": []}
+# modèles capables de JSON et d'outils, du plus adapté au moins adapté (le plus gros d'une même famille d'abord)
+_OLLAMA_PREF = ("qwen3", "qwen2.5", "llama3.3", "llama3.1", "mistral-small", "mistral-nemo", "gemma3", "mistral", "llama3", "phi4")
+
+
+def ollama_models() -> list:
+    """Modèles installés dans Ollama (http://localhost:11434), relus toutes les 2 min ; vide si Ollama n'est pas lancé."""
+    if time.time() - _OLLAMA["t"] < 120:
+        return _OLLAMA["models"]
+    try:
+        r = httpx.get(base_url("ollama").replace("/v1", "") + "/api/tags", timeout=1.5)
+        _OLLAMA["models"] = [m["name"] for m in r.json().get("models", []) if "embed" not in m["name"]]
+    except Exception:
+        _OLLAMA["models"] = []
+    _OLLAMA["t"] = time.time()
+    return _OLLAMA["models"]
+
+
+def ollama_auto_model() -> str:
+    """Modèle Ollama choisi tout seul quand aucun n'est indiqué : la famille la plus adaptée, la plus grosse taille."""
+    ms = ollama_models()
+    if not ms:
+        return ""
+    def size(n):
+        m = re.search(r":(\d+(?:\.\d+)?)b", n)
+        return float(m.group(1)) if m else 0
+    for fam in _OLLAMA_PREF:
+        cand = [m for m in ms if m.startswith(fam)]
+        if cand:
+            return max(cand, key=size)
+    return max(ms, key=size)
 
 
 _CC = {"t": 0.0, "key": None, "exe": None, "checked": [], "deep": False}
@@ -293,6 +330,12 @@ def configured(pid, wait: bool = True) -> tuple[bool, str]:
             (False, "Claude Code introuvable sur ce PC : clique « Rechercher Claude Code » ou indique le chemin de la commande")
     if not base_url(pid):
         return False, "adresse (URL) du service à indiquer"
+    if pid == "ollama" and not (load_settings().get("models") or {}).get("ollama"):
+        m = model_of(pid)
+        if not m:
+            return False, ("Ollama non lancé sur ce PC (ou aucun modèle installé : ollama pull qwen2.5:7b)"
+                           if load_settings().get("local_backup", True) else "nom du modèle à indiquer")
+        return True, f"modèle {m} (choisi tout seul, dernier recours)"
     if not model_of(pid):
         return False, "nom du modèle à indiquer"
     if p.get("key") and not vault.get_provider_key(pid):
@@ -307,7 +350,10 @@ def providers_in_order(wait: bool = True) -> list[str]:
         primary = "anthropic"
     order = [primary] if configured(primary, wait)[0] else []
     if s.get("llm_fallback", True):
-        order += [p for p in PROVIDERS if p != primary and configured(p, wait)[0]]
+        order += [p for p in PROVIDERS if p != primary and p not in LOCAL and configured(p, wait)[0]]
+    # modèle local (Ollama, LM Studio) : toujours en dernier recours, même sans relais activé, s'il tourne sur le PC
+    if s.get("llm_fallback", True) or s.get("local_backup", True):
+        order += [p for p in LOCAL if p not in order and configured(p, wait)[0]]
     return order
 
 
