@@ -54,6 +54,21 @@ SNAP_JS = r"""
     }
     return clean(t);
   };
+  // titre de la partie du formulaire où se trouve le champ (dernier titre qui le précède : « Formation »,
+  // « Expérience professionnelle »…) et légende de son groupe : une « date de début » n'a pas le même sens
+  // dans la formation que pour la disponibilité
+  let HEADS = null;
+  const sectionOf = el => {
+    if (!HEADS) HEADS = [...document.querySelectorAll('h1, h2, h3, h4, h5, [role=heading]')].filter(visible);
+    let last = null;
+    for (const h of HEADS) {
+      if (h.contains(el)) continue;
+      if (h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) last = h; else break; }
+    const out = [];
+    const fs = el.closest('fieldset'), lg = fs && fs.querySelector(':scope > legend');
+    if (lg) out.push(cut(lg.innerText, 40));
+    if (last) out.push(cut(last.innerText, 50));
+    return out.filter(x => x).join(' / '); };
   const groupOf = el => { const fs = el.closest('fieldset, [role=radiogroup], [role=group]');
     if (fs) { const lg = fs.querySelector('legend, [class*=label], [class*=question], span, p'); if (lg) return cut(lg.innerText, 140); }
     return el.name || ''; };
@@ -95,7 +110,8 @@ SNAP_JS = r"""
       if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) {
         if (isToggle) { it.checked = el.checked; if (el.type === 'radio') it.group = groupOf(el); }
         else if (isFile) { it.accept = el.accept || ''; it.files = el.files ? el.files.length : 0; }
-        else it.value = cut(el.isContentEditable ? el.innerText : el.value, 80);
+        else { it.value = cut(el.isContentEditable ? el.innerText : el.value, 80);
+          const sec = sectionOf(el); if (sec) it.section = sec; }
         if (el.placeholder) it.placeholder = cut(el.placeholder, 50);
       }
       if (el.getAttribute('aria-checked')) it.checked = el.getAttribute('aria-checked') === 'true';

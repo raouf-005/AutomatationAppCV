@@ -32,6 +32,18 @@
  "ecole": "",
  "formation": "",
  "annee_diplome": "",
+ "annee_debut_formation": "",
+ "etudes": [
+  {
+   "diplome": "",
+   "niveau": "",
+   "etablissement": "",
+   "lieu": "",
+   "domaine": "",
+   "debut": "",
+   "fin": ""
+  }
+ ],
  "francais": "",
  "anglais": "",
  "pretentions": "",

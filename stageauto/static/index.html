@@ -40,7 +40,7 @@ textarea{min-height:90px}
 .kpi{display:flex;gap:18px;flex-wrap:wrap}.kpi b{font-size:22px;display:block}
 a{color:var(--accent)}
 .st{font-size:12px;padding:2px 8px;border-radius:99px;background:var(--chip);white-space:nowrap}
-.st.applied{background:color-mix(in srgb,var(--ok) 20%,var(--card))}.st.error,.st.blocked_login{background:color-mix(in srgb,var(--bad) 18%,var(--card))}
+.st.applied{background:color-mix(in srgb,var(--ok) 20%,var(--card))}.st.already{background:color-mix(in srgb,var(--ok) 8%,var(--card))}.st.error,.st.blocked_login{background:color-mix(in srgb,var(--bad) 18%,var(--card))}
 @media (max-width:600px){header{padding:10px 16px}main{padding:12px 16px}}
 </style>
 </head>
@@ -83,6 +83,7 @@ a{color:var(--accent)}
     <div data-p="offres">
       <div class="row" style="border:0"><select id="ofilter" style="max-width:240px" onchange="loadOffers()">
         <option value="">Toutes (7 jours)</option><option value="applied">Postulées</option><option value="ready">À valider</option>
+        <option value="docs_ready">CV prêts</option><option value="already">Déjà postulées avant</option>
         <option value="blocked_login">En attente de connexion</option><option value="ignored">Ignorées</option><option value="error">Erreurs</option></select></div>
       <div class="tablewrap"><table><thead><tr><th>Entreprise</th><th>Offre</th><th>Site</th><th>Statut</th><th>Détail</th><th>PDF</th></tr></thead><tbody id="otable"></tbody></table></div>
     </div>
@@ -240,10 +241,12 @@ async function checkConn() {
     else if (r && r.browser === 'playwright') alert('Vérifié dans le Chrome dédié de StageAuto (pas dans ton Chrome) : connecte-toi dans cette fenêtre, ou installe l\'extension pour utiliser ton Chrome.');
   } finally { b.disabled = false; b.textContent = 'Vérifier les connexions'; refresh(); }
 }
+const STATUS = {applied: 'postulée', already: 'déjà postulée avant', docs_ready: 'CV prêt', ready: 'à valider',
+  blocked_login: 'connexion requise', ignored: 'ignorée', error: 'erreur', pending_ai: "en attente de l'IA"};
 async function loadOffers() {
   const rows = await api('/api/offers?status=' + $('#ofilter').value) || [];
   $('#otable').innerHTML = rows.map(o => `<tr><td>${esc(o.company)}</td><td><a href="${esc(o.url)}" target="_blank">${esc(o.title)}</a></td>
-    <td>${esc(o.site)}</td><td><span class="st ${esc(o.status)}">${esc(o.status)}</span> ${verif(o.verified)}</td><td class="muted">${esc((o.reason || '').slice(0, 140))}</td><td>${pdfLinks(o.folder)}</td></tr>`).join('');
+    <td>${esc(o.site)}</td><td><span class="st ${esc(o.status)}">${esc(STATUS[o.status] || o.status)}</span> ${verif(o.verified)}</td><td class="muted">${esc((o.reason || '').slice(0, 140))}</td><td>${pdfLinks(o.folder)}</td></tr>`).join('');
 }
 async function loadContacts() {
   const rows = await api('/api/contacts') || [];
@@ -270,8 +273,7 @@ async function loadNotes() {
 }
 const LISTS = ['keywords', 'linkedin_searches', 'smartrecruiters_companies'];
 async function loadSettings() {
-  loadAI();
-  S = await api('/api/settings');
+  S = await api('/api/settings'); if (!S) { S = {}; return; }
   for (const [k, v] of Object.entries(S)) {
     const el = $('#s_' + k); if (!el) continue;
     if (el.type === 'checkbox') el.checked = !!v;
@@ -280,6 +282,7 @@ async function loadSettings() {
     else if (k === 'custom_answers') el.value = JSON.stringify(v || {}, null, 1);
     else el.value = v ?? '';
   }
+  await loadAI();  // après les réglages : la liste des fournisseurs et le formulaire affiché restent d'accord
   $('#sitesen').innerHTML = '<h2 style="margin-top:12px">Sites actifs</h2>' + Object.entries(S.sites_enabled || {}).map(([k, v]) =>
     `<label class="f"><span><input type="checkbox" data-site="${k}" ${v ? 'checked' : ''}> ${esc(SITES[k] || k)}</span></label>`).join('');
   $('#credsite').innerHTML = Object.entries(SITES).map(([k, n]) => `<option value="${k}">${esc(n)}</option>`).join('') + '<option value="gmail">Gmail</option>';
@@ -300,7 +303,7 @@ async function saveSettings() {
   b.sites_enabled = Object.fromEntries([...document.querySelectorAll('[data-site]')].map(c => [c.dataset.site, c.checked]));
   for (const id of ['s_model', 's_custom_base_url', 's_claude_code_path']) { const el = $('#' + id); if (el) b[id.slice(2)] = el.value.trim(); }
   if ($('#ai_model')) b.models = {...(S.models || {}), [$('#s_llm_provider').value]: $('#ai_model').value.trim()};
-  await api('/api/settings', 'POST', b); loadSettings();
+  await api('/api/settings', 'POST', b); await loadSettings();
 }
 let AI = null;
 async function loadAI() {
@@ -323,7 +326,10 @@ function renderAIForm() {
       connecte-toi une fois en tapant <code>claude</code> dans un terminal. Chaque appel prend quelques secondes de plus qu'avec une clé API
       et compte dans les limites de ton abonnement.</p>
       <label class="f">Modèle (facultatif, ex. sonnet ou opus)<input type="text" id="ai_model" value="${esc(p.model)}"></label>
-      <label class="f">Chemin de la commande claude (facultatif)<input type="text" id="s_claude_code_path" value="${esc(S.claude_code_path || '')}"></label>`;
+      <label class="f">Chemin de la commande claude (facultatif)<input type="text" id="s_claude_code_path" value="${esc(S.claude_code_path || '')}"
+        placeholder="ex. C:\\Users\\toi\\.local\\bin\\claude.exe"></label>
+      <button onclick="findClaudeCode()">Rechercher Claude Code sur ce PC</button>
+      <div id="ccdiag" class="muted" style="margin-top:6px;font-size:13px"></div>`;
   } else if (p.kind === 'anthropic') {
     h = `<label class="f">Modèle<input type="text" id="s_model" value="${esc(S.model || '')}"></label>` + keyField(false) +
       `<p class="muted">Clé à créer sur console.anthropic.com (facturée à l'usage, distincte de l'abonnement Claude).</p>`;
@@ -335,6 +341,16 @@ function renderAIForm() {
       (['ollama', 'lmstudio'].includes(k) ? `<p class="muted">Lance d'abord ${k === 'ollama' ? 'Ollama' : 'LM Studio'} sur ce PC. Un petit modèle local remplit moins bien les formulaires qu'un grand modèle en ligne.</p>` : '');
   }
   $('#aiform').innerHTML = h;
+}
+async function findClaudeCode() {
+  $('#ccdiag').textContent = 'Recherche…';
+  const r = await api('/api/claude_code_diag', 'POST');
+  await loadAI();  // met à jour l'état des fournisseurs, puis affiche le résultat de la recherche
+  if (!r) { $('#ccdiag').textContent = 'Pas de réponse.'; return; }
+  const list = (r.checked || []).map(c => `<li>${c.ok ? '✓' : '✗'} ${esc(c.path)}</li>`).join('');
+  $('#ccdiag').innerHTML = r.found
+    ? `✓ Claude Code trouvé : <b>${esc(r.found === 'wsl' ? 'WSL (Linux sous Windows)' : r.found)}</b>. Clique « Enregistrer et tester l'IA ».` + (list ? `<ul>${list}</ul>` : '')
+    : `✗ Introuvable automatiquement.${list ? `<ul>${list}</ul>` : ''}<p>${esc(r.hint)}</p>`;
 }
 async function saveAndTestAI() {
   const k = $('#s_llm_provider').value, key = $('#ai_key') ? $('#ai_key').value.trim() : '';

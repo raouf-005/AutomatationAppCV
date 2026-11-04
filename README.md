@@ -107,7 +107,7 @@ Dans **Réglages → Intelligence artificielle**, choisis le fournisseur princip
 
 | Fournisseur | Ce qu'il faut |
 |---|---|
-| **Claude Code** (ton abonnement Claude) | Claude Code installé sur ce PC, connexion faite une fois (taper `claude` dans un terminal). Aucune clé. Plus lent qu'une clé API ; compte dans les limites de ton abonnement. |
+| **Claude Code** (ton abonnement Claude) | Claude Code installé sur ce PC (version terminal, ou dans WSL), connexion faite une fois (taper `claude` dans un terminal, puis `/login`). Aucune clé. Plus lent qu'une clé API ; compte dans les limites de ton abonnement. |
 | Claude (API Anthropic) | Clé créée sur console.anthropic.com (facturée à l'usage, distincte de l'abonnement Claude). |
 | ChatGPT (OpenAI), Gemini (Google), Kimi (Moonshot), Qwen (Alibaba Cloud), DeepSeek, Mistral, OpenRouter, Groq | Clé du service + nom exact du modèle. |
 | Modèle local : Ollama ou LM Studio | Le logiciel lancé sur ce PC + nom du modèle. Pas de clé. Un petit modèle remplit moins bien les formulaires. |
@@ -118,6 +118,12 @@ Dans **Réglages → Intelligence artificielle**, choisis le fournisseur princip
 - Avec « Si le fournisseur principal échoue… » coché, les autres fournisseurs prêts prennent le relais (clé refusée,
   crédit épuisé, service indisponible). Claude Code est utilisé automatiquement s'il est installé et qu'aucune clé n'est
   configurée.
+- **Claude Code introuvable** : choisis Claude Code puis clique « Rechercher Claude Code sur ce PC ». La liste montre les
+  emplacements essayés (installateur officiel `%USERPROFILE%\.local\bin\claude.exe`, npm, winget, WSL…). S'il n'est
+  pas trouvé : dans un terminal, `where claude` (PowerShell : `(Get-Command claude).Source`), puis colle le chemin dans
+  « Chemin de la commande claude ». Si la commande n'existe pas (Claude Code utilisé seulement dans l'application de
+  bureau), installe la version terminal : PowerShell → `irm https://claude.ai/install.ps1 | iex`, puis tape `claude`
+  une fois pour te connecter. Claude Code sous Windows demande aussi Git pour Windows (git-scm.com).
 - Sans aucune IA prête, l'application ne cherche pas d'offres (elle ne pourrait pas écrire les CV) et te le signale.
   Les offres déjà trouvées sont gardées « en attente de l'IA » et reprises dès qu'une IA est prête.
 
@@ -161,7 +167,15 @@ Dans **Réglages → Intelligence artificielle**, choisis le fournisseur princip
 - Offre exigeant la nationalité française, la citoyenneté UE ou une habilitation : ignorée.
 - Jamais de création de compte. Les mots de passe ne passent jamais par Claude : l'outil `fill_credentials` les saisit
   sans les montrer. Les captchas ne sont jamais résolus : l'offre attend que tu te connectes.
-- Au plus 3 offres par entreprise et par jour, 20 invitations LinkedIn et 5 InMails par jour (réglables).
+- Au plus 3 offres par entreprise et par jour, 20 invitations LinkedIn et 5 InMails par jour (réglables). Le nom de
+  l'entreprise est comparé sans tenir compte de l'écriture (« Orange », « ORANGE SA », « Groupe Orange »).
+- Jamais deux candidatures à la même offre, même publiée sur plusieurs sites : avant de préparer le CV puis juste avant
+  d'envoyer, l'offre est comparée à celles déjà postulées (même entreprise, intitulé presque identique, ou intitulé abrégé
+  de l'historique). Une redirection HelloWork ou Indeed vers une offre déjà postulée (orange.jobs, Thales…) est reconnue
+  à son adresse et arrêtée tout de suite. Ces offres apparaissent « déjà postulée avant » et ne comptent pas dans les
+  candidatures du jour.
+- Formulaires « Formation » (établissement, diplôme, années « De » / « À ») : remplis avec la liste `etudes` du profil,
+  exactement comme sur le CV.
 - CV et lettre : uniquement les faits et chiffres du profil du skill, sans outil interdit.
 
 ## À savoir
@@ -185,6 +199,10 @@ Dans **Réglages → Intelligence artificielle**, choisis le fournisseur princip
   été vu (ex. « session LinkedIn active (cookie li_at) », « redirigé vers la page de connexion »). Point orange = pas sûr :
   le site est utilisé quand même. Seul un rouge sûr fait sauter un site. Si tout est rouge, l'extension n'est sans doute
   pas connectée, ou elle est installée dans un autre profil Chrome que celui où tu es connecté.
+- **« build du skill en échec »** (versions avant le 4 novembre) : sous Windows, `build.py` du skill s'arrêtait sur
+  l'affichage de « ✓ » et chaque CV partait sur les modèles de secours. C'est corrigé : le skill tourne en UTF-8. Si
+  `build.py` s'arrête encore (outil absent…), le journal affiche la cause en une ligne et un contrôle allégé prend le
+  relais : le CV reste celui du skill.
 - **Le tableau de bord ne s'ouvre pas** : lance **`StageAuto_debug.bat`**. Il démarre l'application avec une console qui
   affiche les messages ; envoie ces lignes si tu as besoin d'aide. Le détail est aussi dans
   `%LOCALAPPDATA%\StageAuto\console.log` et `stageauto.log`.

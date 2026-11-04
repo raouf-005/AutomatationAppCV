@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -77,29 +78,216 @@ def model_of(pid) -> str:
     return (s.get("models") or {}).get(pid, "") or ""
 
 
-def claude_bin():
-    """Chemin de la commande « claude » (Claude Code) sur ce PC, ou None."""
+_CC = {"t": 0.0, "key": None, "exe": None, "checked": [], "deep": False}
+_VALID: dict = {}
+_CC_LOCK = threading.Lock()
+INSTALL_HINT = ("Dans un terminal, tape « where claude » (PowerShell : (Get-Command claude).Source) et colle le chemin "
+                "affiché dans « Chemin de la commande claude ». Si la commande n'existe pas (Claude Code utilisé seulement "
+                "dans l'application de bureau), installe la version terminal : PowerShell → irm https://claude.ai/install.ps1 | iex, "
+                "puis tape claude une fois pour te connecter.")
+# Dans WSL : Claude Code installé par l'installateur, par npm ou par nvm (que « bash -lc » ne charge pas toujours)
+_WSL_FIND = ('for c in "$(command -v claude 2>/dev/null)" "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" '
+             '$HOME/.nvm/versions/node/*/bin/claude /usr/local/bin/claude; do '
+             'if [ -n "$c" ] && [ -x "$c" ]; then PATH="$(dirname "$c"):$PATH" exec "$c" "$@"; fi; done; '
+             'echo "claude introuvable dans WSL" >&2; exit 127')
+
+
+def _registry_path_dirs() -> list:
+    """PATH actuel de Windows (lu dans le registre) : un Claude Code installé après le démarrage de StageAuto est vu."""
+    if not IS_WIN:
+        return []
+    import winreg
+    dirs = []
+    for root, sub in ((winreg.HKEY_CURRENT_USER, r"Environment"),
+                      (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+        try:
+            with winreg.OpenKey(root, sub) as k:
+                v, _ = winreg.QueryValueEx(k, "Path")
+                dirs += [os.path.expandvars(d.strip()) for d in str(v).split(";") if d.strip()]
+        except OSError:
+            pass
+    return dirs
+
+
+def _gui_app(path: str) -> bool:
+    """Application de bureau Claude (fenêtre) et non l'outil en ligne de commande : on ne la lance jamais pour un test.
+    Electron (resources/app.asar à côté), installation Squirrel (AnthropicClaude), alias du Microsoft Store (WindowsApps)."""
+    k = os.path.normcase(path).replace(" ", "")
+    return ("anthropicclaude" in k or os.sep + "windowsapps" + os.sep in k
+            or os.path.exists(os.path.join(os.path.dirname(path), "resources", "app.asar")))
+
+
+def _newest_first(paths: list) -> list:
+    def mtime(p):
+        try:
+            return os.path.getmtime(p)
+        except OSError:
+            return 0
+    return sorted(paths, key=mtime, reverse=True)
+
+
+def _candidates() -> list:
+    import glob
     s = load_settings()
-    cands = [s.get("claude_code_path") or "", shutil.which("claude") or ""]
+    c = []
+    if s.get("claude_code_path"):
+        c.append(s["claude_code_path"].strip().strip('"'))
+    if shutil.which("claude"):
+        c.append(shutil.which("claude"))
+    names = ["claude.exe", "claude.cmd"] if IS_WIN else ["claude"]
+    for d in _registry_path_dirs():
+        c += [os.path.join(d, n) for n in names]
+    home = os.path.expanduser("~")
     if IS_WIN:
-        home = os.path.expanduser("~")
-        cands += [os.path.join(home, ".local", "bin", "claude.exe"),
-                  os.path.expandvars(r"%APPDATA%\npm\claude.cmd"),
-                  os.path.expandvars(r"%LOCALAPPDATA%\Programs\claude\claude.exe")]
-    return next((c for c in cands if c and os.path.exists(c)), None)
+        la, ra = os.environ.get("LOCALAPPDATA", ""), os.environ.get("APPDATA", "")
+        c += [os.path.join(home, ".local", "bin", "claude.exe"),            # installateur officiel (install.ps1)
+              os.path.join(home, ".claude", "local", "claude.exe"),
+              os.path.join(home, ".claude", "local", "claude.cmd"),
+              os.path.join(ra, "npm", "claude.cmd"),                         # npm
+              os.path.join(la, "Microsoft", "WinGet", "Links", "claude.exe"),  # winget
+              os.path.join(home, "scoop", "shims", "claude.exe"),
+              os.path.join(la, "Volta", "bin", "claude.exe"),
+              os.path.join(la, "pnpm", "claude.cmd"), os.path.join(ra, "pnpm", "claude.cmd")]
+        for pat in (os.path.join(la, "Microsoft", "WinGet", "Packages", "Anthropic.ClaudeCode*", "**", "claude.exe"),
+                    os.path.join(ra, "Claude", "claude-code", "*", "claude*.exe"),     # copie de l'application de bureau Claude
+                    os.path.join(la, "Claude", "claude-code", "*", "claude*.exe"),
+                    os.path.join(ra, "nvm", "*", "claude.cmd")):
+            c += _newest_first(glob.glob(pat, recursive=True))
+    else:
+        c += [os.path.join(home, ".local", "bin", "claude"), os.path.join(home, ".claude", "local", "claude"),
+              "/usr/local/bin/claude", "/opt/homebrew/bin/claude"]
+    out, seen = [], set()
+    for x in c:
+        k = os.path.normcase(x or "")
+        if x and k not in seen and os.path.isfile(x) and not _gui_app(x):
+            seen.add(k)
+            out.append(x)
+    return out
 
 
-def configured(pid) -> tuple[bool, str]:
+def _is_claude_code(exe: str) -> bool:
+    if exe not in _VALID:
+        try:
+            r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=25, encoding="utf-8",
+                               errors="replace", creationflags=0x08000000 if IS_WIN else 0)
+            _VALID[exe] = "claude code" in (r.stdout + r.stderr).lower()
+        except Exception:
+            _VALID[exe] = False
+    return _VALID[exe]
+
+
+def _wsl_has_claude() -> bool:
+    if not IS_WIN or not shutil.which("wsl"):
+        return False
+    if "wsl" not in _VALID:
+        try:
+            r = subprocess.run(["wsl.exe", "-e", "bash", "-lc", _WSL_FIND, "claude", "--version"], capture_output=True,
+                               timeout=40, creationflags=0x08000000)
+            out = (r.stdout + r.stderr).decode("utf-8", "ignore").replace("\x00", "")  # wsl.exe peut écrire en UTF-16
+            _VALID["wsl"] = "claude code" in out.lower()
+        except Exception:
+            _VALID["wsl"] = False
+    return _VALID["wsl"]
+
+
+def _fresh(key: str, deep: bool) -> bool:
+    return (_CC["key"] == key and time.time() - _CC["t"] < 120
+            and (bool(_CC["exe"]) or _CC["deep"] or not deep))
+
+
+def _scan(key: str, deep: bool, refresh: bool, release: bool = False):
+    try:
+        if refresh:
+            _VALID.clear()
+        found, checked = None, []
+        for exe in _candidates():
+            ok = _is_claude_code(exe)
+            checked.append({"path": exe, "ok": ok})
+            if ok:
+                found = exe
+                break
+        if not found and deep and _wsl_has_claude():
+            found = "wsl"
+            checked.append({"path": "WSL (Linux sous Windows)", "ok": True})
+        _CC.update(t=time.time(), key=key, exe=found, checked=checked, deep=deep)
+    except Exception as e:
+        log(f"recherche de Claude Code : {e.__class__.__name__} {str(e)[:120]}")
+    finally:
+        if release:
+            _CC_LOCK.release()
+
+
+def claude_bin(refresh: bool = False, wait: bool = True, deep: bool = False):
+    """Commande Claude Code utilisable sur ce PC (chemin, ou « wsl »), ou None. Résultat gardé 2 minutes.
+    wait=False (tableau de bord) : ne bloque jamais ; la recherche se fait en arrière-plan et la réponse est le dernier
+    résultat connu. deep : cherche aussi dans WSL (démarre WSL, lent) ; d'office si Claude Code est l'IA choisie."""
+    s = load_settings()
+    key = s.get("claude_code_path", "")
+    deep = deep or refresh or s.get("llm_provider") == "claude_code"
+    if not refresh and _fresh(key, deep):
+        return _CC["exe"]
+    if not wait:
+        if _CC_LOCK.acquire(blocking=False):
+            threading.Thread(target=_scan, args=(key, deep, refresh, True), daemon=True).start()
+        return _CC["exe"] if _CC["key"] == key else None
+    with _CC_LOCK:
+        if refresh or not _fresh(key, deep):
+            _scan(key, deep, refresh)
+    return _CC["exe"]
+
+
+def claude_searching() -> bool:
+    return _CC_LOCK.locked()
+
+
+def claude_diag() -> dict:
+    """Bouton « Rechercher Claude Code » : ce qui a été trouvé et où."""
+    exe = claude_bin(refresh=True)
+    return {"found": exe, "checked": _CC["checked"], "hint": "" if exe else INSTALL_HINT}
+
+
+def _wsl_path(p: str) -> str:
+    m = re.match(r"^([A-Za-z]):[\\/](.*)$", str(p))
+    return f"/mnt/{m.group(1).lower()}/{m.group(2).replace(chr(92), '/')}" if m else str(p)
+
+
+def _cc_env() -> dict:
+    """Claude Code sous Windows a besoin de Git Bash : s'il est installé mais absent du PATH de StageAuto, on l'indique."""
+    env = dict(os.environ)
+    if IS_WIN and not env.get("CLAUDE_CODE_GIT_BASH_PATH") and not shutil.which("bash"):
+        for b in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files (x86)\Git\bin\bash.exe",
+                  os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe")):
+            if os.path.isfile(b):
+                env["CLAUDE_CODE_GIT_BASH_PATH"] = b
+                break
+    return env
+
+
+def _login_hint(exe: str) -> str:
+    if exe == "wsl":
+        return " — Claude Code n'est pas connecté : ouvre WSL (Ubuntu), tape claude, puis /login."
+    if shutil.which("claude") and os.path.normcase(shutil.which("claude")) == os.path.normcase(exe):
+        return " — Claude Code n'est pas connecté : ouvre un terminal, tape claude, puis /login."
+    return f" — Claude Code n'est pas connecté : ouvre l'invite de commandes, colle \"{exe}\" puis Entrée, et tape /login."
+
+
+def configured(pid, wait: bool = True) -> tuple[bool, str]:
     p = PROVIDERS.get(pid)
     if not p:
         return False, "fournisseur inconnu"
+    if refused(pid):
+        return False, refused(pid)
     if p["kind"] == "anthropic":
         return (True, "clé enregistrée") if (vault.get_api_key() or os.environ.get("ANTHROPIC_API_KEY")) \
             else (False, "clé API Anthropic à ajouter")
     if p["kind"] == "claude_code":
-        exe = claude_bin()
-        return (True, f"commande trouvée : {exe}") if exe else \
-            (False, "commande « claude » introuvable : installe Claude Code et connecte-toi une fois")
+        exe = claude_bin(wait=wait)
+        if not exe and claude_searching():
+            return False, "recherche de Claude Code sur ce PC…"
+        if exe == "wsl":
+            return True, "Claude Code trouvé dans WSL (Linux sous Windows)"
+        return (True, f"Claude Code trouvé : {exe}") if exe else \
+            (False, "Claude Code introuvable sur ce PC : clique « Rechercher Claude Code » ou indique le chemin de la commande")
     if not base_url(pid):
         return False, "adresse (URL) du service à indiquer"
     if not model_of(pid):
@@ -109,31 +297,31 @@ def configured(pid) -> tuple[bool, str]:
     return True, f"modèle {model_of(pid)}"
 
 
-def providers_in_order() -> list[str]:
+def providers_in_order(wait: bool = True) -> list[str]:
     s = load_settings()
     primary = s.get("llm_provider", "anthropic")
     if primary not in PROVIDERS:
         primary = "anthropic"
-    order = [primary] if configured(primary)[0] else []
+    order = [primary] if configured(primary, wait)[0] else []
     if s.get("llm_fallback", True):
-        order += [p for p in PROVIDERS if p != primary and configured(p)[0]]
+        order += [p for p in PROVIDERS if p != primary and configured(p, wait)[0]]
     return order
 
 
-def ready() -> bool:
-    return bool(providers_in_order())
+def ready(wait: bool = True) -> bool:
+    return bool(providers_in_order(wait))
 
 
-def describe() -> dict:
+def describe(wait: bool = True) -> dict:
     s = load_settings()
     out = {}
     for pid, p in PROVIDERS.items():
-        ok, why = configured(pid)
+        ok, why = configured(pid, wait)
         out[pid] = {"label": p["label"], "kind": p["kind"], "ok": ok, "why": why, "model": model_of(pid),
                     "needs_key": bool(p.get("key")) or p["kind"] == "anthropic",
                     "has_key": bool(vault.get_api_key() if pid == "anthropic" else vault.get_provider_key(pid)),
                     "url": base_url(pid) if p["kind"] == "openai" else ""}
-    return {"providers": out, "primary": s.get("llm_provider", "anthropic"), "order": providers_in_order(),
+    return {"providers": out, "primary": s.get("llm_provider", "anthropic"), "order": providers_in_order(wait),
             "fallback": s.get("llm_fallback", True)}
 
 
@@ -155,6 +343,38 @@ def anthropic_client():
 def reset():
     global _anthropic
     _anthropic = None
+    _REFUSED.clear()
+
+
+# Clé refusée (401/403) : le fournisseur est écarté 30 min (ou jusqu'à une nouvelle clé) au lieu d'échouer offre par offre
+_REFUSED: dict = {}
+
+
+def _auth_error(e: Exception) -> bool:
+    if isinstance(e, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
+        return True
+    return isinstance(e, ProviderError) and re.search(
+        r"\b(401|403)\b|invalid (api key|bearer|x-api-key)|incorrect api key|unauthori[sz]ed|authentication_error",
+        str(e), re.I) is not None
+
+
+def note_failure(pid: str, e: Exception) -> None:
+    if not pid or not _auth_error(e) or refused(pid):
+        return
+    msg = f"clé refusée par {label(pid)} ({str(e)[:110]})"
+    if pid == "anthropic" and "bearer" in str(e).lower():
+        msg += (" — une clé d'API Anthropic commence par sk-ant-api ; un jeton d'abonnement (sk-ant-oat…) ne marche pas "
+                "ici : pour ton abonnement, choisis « Claude Code »")
+    _REFUSED[pid] = (time.time(), msg)
+    log(msg + " — fournisseur écarté 30 min (ou jusqu'à une nouvelle clé)", "error")
+
+
+def refused(pid: str) -> str:
+    r = _REFUSED.get(pid)
+    if r and time.time() - r[0] < 1800:
+        return r[1]
+    _REFUSED.pop(pid, None)
+    return ""
 
 
 def _fallback_worthy(e: Exception) -> bool:
@@ -212,11 +432,14 @@ def cc_call(text: str, resume: str | None = None, system: str | None = None, tim
     """Une requête à Claude Code en mode non interactif (claude -p). Les consignes de l'application remplacent celles de
     Claude Code (--system-prompt-file), la demande passe par l'entrée standard, et ses outils (fichiers, terminal, web)
     sont désactivés : il ne fait que répondre."""
-    exe = claude_bin()
+    exe = claude_bin(deep=True)
     if not exe:
-        raise ProviderError("Claude Code introuvable")
+        raise ProviderError("Claude Code introuvable : " + INSTALL_HINT)
     CC_DIR.mkdir(parents=True, exist_ok=True)
-    args = [exe, "-p", "Lis la demande complète transmise sur l'entrée standard et réponds exactement au format demandé.",
+    wsl = exe == "wsl"
+    base = ["wsl.exe", "-e", "bash", "-lc", _WSL_FIND, "claude"] if wsl else [exe]
+    # consigne en ASCII : rien à convertir entre pages de code (claude.cmd passe par l'invite de commandes)
+    args = base + ["-p", "Read the full request given on standard input and answer exactly in the requested format.",
             "--output-format", "json",
             "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,Read,Glob,Grep"]
     if system:
@@ -224,14 +447,14 @@ def cc_call(text: str, resume: str | None = None, system: str | None = None, tim
         f = CC_DIR / f"consignes_{hashlib.sha1(system.encode('utf-8')).hexdigest()[:12]}.txt"
         if not f.exists():
             f.write_text(system, encoding="utf-8")
-        args += ["--system-prompt-file", str(f)]
+        args += ["--system-prompt-file", _wsl_path(f) if wsl else str(f)]
     if model_of("claude_code"):
         args += ["--model", model_of("claude_code")]
     if resume:
         args += ["--resume", resume]
     try:
         r = subprocess.run(args, input=text, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=timeout, cwd=str(CC_DIR), creationflags=0x08000000 if IS_WIN else 0)
+                           timeout=timeout, cwd=str(CC_DIR), env=_cc_env(), creationflags=0x08000000 if IS_WIN else 0)
     except subprocess.TimeoutExpired:
         raise ProviderError("Claude Code : délai dépassé")
     out = (r.stdout or "").strip()
@@ -245,8 +468,12 @@ def cc_call(text: str, resume: str | None = None, system: str | None = None, tim
     if j is None:
         j = _loads(out)
     if r.returncode != 0 or not isinstance(j, dict) or j.get("is_error"):
-        msg = (j or {}).get("result") if isinstance(j, dict) else None
-        raise ProviderError(f"Claude Code : {(msg or r.stderr or out or 'erreur inconnue')[-300:]}")
+        msg = str(((j or {}).get("result") if isinstance(j, dict) else None) or r.stderr or out or "erreur inconnue")
+        if re.search(r"log ?in|/login|api key|auth|credential|not logged", msg, re.I):
+            msg += _login_hint(exe)
+        if re.search(r"git.?bash", msg, re.I):
+            msg += " — Claude Code sous Windows demande Git pour Windows (git-scm.com) : installe-le puis réessaie."
+        raise ProviderError(f"Claude Code : {msg[-400:]}")
     return j.get("result") or "", j.get("session_id")
 
 
@@ -270,14 +497,18 @@ class JsonConversation:
         try:
             return self._ask()
         except Exception as e:
+            note_failure(self.provider, e)
             if len(self.users) != 1 or not _fallback_worthy(e):
                 raise
             for nxt in self.order[self.order.index(self.provider) + 1:]:
+                if refused(nxt):
+                    continue
                 log(f"{label(self.provider)} indisponible ({str(e)[:80]}) : relais par {label(nxt)}")
                 self.provider, self.msgs, self.cc_session = nxt, [{"role": "user", "content": text}], None
                 try:
                     return self._ask()
                 except Exception as e2:
+                    note_failure(nxt, e2)
                     if not _fallback_worthy(e2):
                         raise
                     e = e2
@@ -362,12 +593,14 @@ def complete_text(prompt: str, max_tokens=32000) -> str | None:
                          "max_tokens": min(max_tokens, int(s.get("foreign_max_tokens", 16000)))}, pid)
             return ((j.get("choices") or [{}])[0].get("message") or {}).get("content")
         except Exception as e:
+            note_failure(pid, e)
             log(f"{label(pid)} : {e.__class__.__name__} {str(e)[:100]}")
     return None
 
 
 def test(pid: str) -> dict:
-    """Bouton « Tester » : une petite question à ce fournisseur."""
+    """Bouton « Tester » : une petite question à ce fournisseur (même s'il avait été écarté : on réessaie)."""
+    _REFUSED.pop(pid, None)
     ok, why = configured(pid)
     if not ok:
         return {"ok": False, "error": why}
@@ -424,10 +657,13 @@ class ToolConversation:
         try:
             st = self._step()
         except Exception as e:
+            note_failure(self.provider, e)
             if self.turns != 0 or not _fallback_worthy(e):
                 raise
             st = None
             for nxt in self.order[self.order.index(self.provider) + 1:]:
+                if refused(nxt):
+                    continue
                 log(f"{label(self.provider)} indisponible ({str(e)[:80]}) : relais par {label(nxt)}")
                 self.provider = nxt
                 self.msgs = [{"role": "user", "content": self.first_user}]

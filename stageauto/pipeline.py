@@ -21,6 +21,7 @@ from .agent import Agent
 from .config import CANDIDATURES, DOMAIN_NEG, DOMAIN_POS, WORK, load_settings
 from .forms import NeedLogin, nrm
 from .notify import log, push
+from . import sites as sites_mod
 from .sites import SITES
 
 STATE = {"running": False, "phase": "en attente", "detail": "", "started": None, "ended": None, "connections": {},
@@ -144,23 +145,23 @@ async def gather_offers(browser, ids, hours, quick=False):
 
 def select_new(offers):
     s = load_settings()
-    keep, seen_norm = [], set()
+    keep, kept = [], []
     per_company = {}
     for o in offers:
         if o.get("already"):
             if not db.q("SELECT 1 FROM offers WHERE key=?", (o["key"],)):
-                db.upsert_offer({**o, "status": "applied", "reason": "déjà postulé (marqueur du site)"})
+                db.upsert_offer({**o, "status": "already", "reason": "déjà postulé (marqueur du site)"})
             continue
         if db.offer_seen(o["key"], o.get("company", ""), o.get("title", "")):
             continue
-        n = db.offer_norm(o.get("company", ""), o.get("title", ""))
-        if n in seen_norm:
+        # la même offre listée par deux sites dans ce passage (HelloWork + orange.jobs…) : une seule candidature
+        if any(db.same_offer(o.get("company", ""), o.get("title", ""), c, t) for c, t in kept):
             continue
-        seen_norm.add(n)
+        kept.append((o.get("company", ""), o.get("title", "")))
         if not in_domain(o):
             db.upsert_offer({**o, "status": "ignored", "reason": "hors domaine (titre)"})
             continue
-        c = nrm(o.get("company", ""))[:30]
+        c = db.company_key(o.get("company", "")) or nrm(o.get("company", ""))[:30]
         if per_company.get(c, 0) + db.applied_today_for(o.get("company", "")) >= s["max_per_company_per_day"]:
             continue
         per_company[c] = per_company.get(c, 0) + 1
@@ -197,6 +198,15 @@ def recipe_key(o, url: str) -> str:
     return f"{o['site']}|{host}" + ("|easy" if o.get("easy") else "")
 
 
+def key_from_seq(url: str) -> str:
+    """Page de candidature orange.jobs (apply?jobSeqNo=…) : retrouve l'offre orange.jobs connue par ce numéro."""
+    m = re.search(r"orange\.jobs/.*?[?&]jobSeqNo=([A-Za-z0-9]+)", url or "")
+    if not m:
+        return ""
+    r = db.q("SELECT key FROM offers WHERE site='orange' AND data LIKE ?", (f'%"jobSeqNo": "{m.group(1)}"%',))
+    return r[0]["key"] if r else ""
+
+
 async def apply_one(browser, o, lane=1):
     """Méthode mémorisée d'abord (sans IA) ; l'agent prend la suite au premier imprévu ou s'il n'y a pas de méthode."""
     site = SITES[o["site"]]
@@ -206,7 +216,13 @@ async def apply_one(browser, o, lane=1):
     auto = s.get("auto_submit", True)
     try:
         extra = await site.start(tab, o)
-        rkey = recipe_key(o, await tab.url())
+        url_now = await tab.url()
+        rkey = recipe_key(o, url_now)
+        other = sites_mod.key_from_url(url_now) or key_from_seq(url_now)
+        if other and other != o["key"]:
+            row = db.q("SELECT status FROM offers WHERE key=?", (other,))
+            if row and row[0]["status"] in ("applied", "already"):
+                return {"status": "already_applied", "reason": f"redirige vers {other}, déjà postulée", "seconds": 0, "steps": 0}
         files = files_for(o)
         res, mode, t0 = None, "agent", dt.datetime.now()
         if s.get("use_memory", True):
@@ -295,7 +311,7 @@ async def stream(browser, offers, summary, resume=()):
             finally:
                 await tab.close()
         if o.get("already"):
-            db.upsert_offer({**o, "status": "applied", "reason": "déjà postulé (page de l'offre)"})
+            db.upsert_offer({**o, "status": "already", "reason": "déjà postulé (page de l'offre)"})
             return
         if not (o.get("description") or "").strip():
             db.upsert_offer({**o, "status": "ignored", "reason": "descriptif illisible"})
@@ -328,7 +344,13 @@ async def stream(browser, offers, summary, resume=()):
             return
         o.update({"cv": r["cv"], "lm": r["lm"], "lettre_txt": r["lettre_txt"], "message_court": r.get("message_court", ""),
                   "poste": r.get("poste"), "dossier": r["dossier"], "lang": r.get("lang"), "gen_folder": r["folder"],
-                  "docs_at": db.now()})
+                  "docs_at": db.now(), "company_ai": r.get("company") or ""})
+        if r.get("company") and (not o.get("company") or sites_mod.junk_line(o["company"])):
+            o["company"] = r["company"]
+        dup = db.duplicate_of(o.get("company", ""), o.get("title", ""), o["key"], statuses=("applied", "already"))
+        if dup:  # entreprise connue seulement maintenant : c'est une offre déjà postulée ailleurs
+            db.upsert_offer({**o, "status": "already", "reason": f"déjà postulé via {dup['key']}"})
+            return
         db.upsert_offer({**o, "status": "docs_ready", "reason": "; ".join(r.get("warnings", []))[:300]})
         await enqueue(o)  # la candidature part tout de suite si la voie est libre
 
@@ -359,6 +381,11 @@ async def stream(browser, offers, summary, resume=()):
 
 async def apply_and_record(browser, o, summary, lane=1):
     s = load_settings()
+    dup = db.duplicate_of(o.get("company", ""), o.get("title", ""), o["key"], statuses=("applied", "already"))
+    if dup:
+        db.set_status(o["key"], "already", f"déjà postulé via {dup['key']}")
+        log(f"déjà postulé : {o['company']} — {o['title'][:60]} (même offre que {dup['key']}) : pas de seconde candidature")
+        return
     if db.applied_today_for(o["company"]) >= s["max_per_company_per_day"]:
         db.set_status(o["key"], "ignored", "plafond d'offres par entreprise et par jour")
         return
@@ -383,8 +410,8 @@ async def apply_and_record(browser, o, summary, lane=1):
     elif st == "ready":
         db.set_status(o["key"], "ready", "rempli, en attente de validation")
         summary["ready"].append(o)
-    elif st == "already_applied":
-        db.set_status(o["key"], "applied", "déjà postulé")
+    elif st == "already_applied":  # postulé avant (autre site, à la main) : pas une candidature d'aujourd'hui
+        db.set_status(o["key"], "already", ("déjà postulé : " + res.get("reason", ""))[:300])
     elif st == "needs_login":
         db.set_status(o["key"], "blocked_login", res.get("reason", ""))
         if o["site"] not in STATE["needs_login"]:
@@ -460,7 +487,7 @@ async def run_pass(trigger="manuel", mode="full"):
         if missing and not quick:
             push("Connecte-toi à : " + ", ".join(missing),
                  "Dans Chrome (ou bouton « Se connecter » du tableau de bord) – je postule dès que c'est fait.")
-        if not providers.ready():
+        if not await asyncio.to_thread(providers.ready):  # recherche de Claude Code possible : hors de la boucle
             # sans IA, ni CV ni candidature : inutile de chercher (les offres seront trouvées au passage suivant)
             summary["no_ai"] = True
             if STATE.get("no_ai_alert") != db.today():

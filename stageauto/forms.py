@@ -47,6 +47,10 @@ def is_yes_no(options):
     return bool(s & {"oui", "yes"}) and bool(s & {"non", "no"})
 
 
+EDU_SECTION_RE = (r"\b(formations?|education|etudes?|diplomes?|degrees?|schools?|ecoles?|universit\w*|experiences?|emplois?|"
+                  r"employment|work history|parcours|cursus)\b")
+
+
 def rule_answer(label: str, f: dict, ctx: dict):
     """Réponse par règle. Renvoie (valeur, 'texte'|'option'|'check'|'file'|'skip') ou None. Lève Blocked."""
     L = nrm(label)
@@ -67,6 +71,10 @@ def rule_answer(label: str, f: dict, ctx: dict):
         return (ctx.get("cv"), "file")
     if t == "password":
         raise NeedLogin("mot de passe demandé")
+    # partie « Formation » ou « Expérience » (titre du bloc) : l'agent remplit chaque entrée avec la liste etudes du profil.
+    # Une règle y mettrait la disponibilité dans « Date de début », ou Paris-Saclay dans l'établissement de la licence.
+    if t not in ("checkbox", "radio") and re.search(EDU_SECTION_RE, nrm(f.get("section", ""))):
+        return (None, "agent")  # ni règle, ni mémoire, ni question isolée à l'IA : l'agent voit tout le bloc
     if re.search(r"sponsor|parrainage|visa", L):
         return (pick(opts, "non", "no") or "Non", "option" if opts else "texte")
     for pat in BLOCK_PATTERNS:
@@ -152,13 +160,13 @@ def to_fields(items):
         if role.startswith("textbox"):
             ty = role.split(":", 1)[1] if ":" in role else "text"
             fields.append({"ref": it["ref"], "tag": "input", "type": ty if ty != "editable" else "textarea",
-                           "label": it["name"], "value": it.get("value", ""), "required": it.get("required"), "options": []})
+                           "label": it["name"], "value": it.get("value", ""), "required": it.get("required"), "options": [], "section": it.get("section", "")})
         elif role == "textarea":
             fields.append({"ref": it["ref"], "tag": "textarea", "type": "textarea", "label": it["name"],
-                           "value": it.get("value", ""), "required": it.get("required"), "options": []})
+                           "value": it.get("value", ""), "required": it.get("required"), "options": [], "section": it.get("section", "")})
         elif role == "select":
             fields.append({"ref": it["ref"], "tag": "select", "type": "select", "label": it["name"],
-                           "value": it.get("value", ""), "required": it.get("required"), "options": it.get("options", [])})
+                           "value": it.get("value", ""), "required": it.get("required"), "options": it.get("options", []), "section": it.get("section", "")})
         elif role == "checkbox":
             fields.append({"ref": it["ref"], "tag": "input", "type": "checkbox", "label": it["name"],
                            "value": "on" if it.get("checked") else "", "required": it.get("required"), "options": []})
@@ -168,7 +176,7 @@ def to_fields(items):
                            "accept": it.get("accept", "")})
         elif role == "combobox":
             fields.append({"ref": it["ref"], "tag": "input", "type": "combobox", "label": it["name"],
-                           "value": it.get("value", ""), "required": it.get("required"), "options": []})
+                           "value": it.get("value", ""), "required": it.get("required"), "options": [], "section": it.get("section", "")})
         elif role == "radio":
             g = it.get("group") or it["name"]
             if g not in radios:

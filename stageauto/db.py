@@ -1,5 +1,6 @@
 """Base SQLite : offres vues, candidatures, contacts LinkedIn, réponses apprises, méthodes par site."""
 import datetime as dt
+import functools
 import json
 import re
 import sqlite3
@@ -64,14 +65,60 @@ def offer_norm(company: str, title: str) -> str:
     return norm_text(company)[:30] + "|" + norm_text(title)[:80]
 
 
+# ---------- même offre sur plusieurs sites ----------
+STOP = set("de des du la le les l d un une et en au aux a pour par sur dans avec of the and for in on to at h f fh hf x "
+           "ou o e euse eur trice".split())
+GENERIC_CO = set("groupe group sa sas sasu se spa inc ltd gmbh france the le la les".split())
+
+
+@functools.lru_cache(maxsize=8192)
+def title_tokens(title: str) -> frozenset:
+    """Mots distinctifs d'un intitulé, accents et pluriels retirés (réseaux = réseau, optiques = optique)."""
+    toks = [t for t in norm_text(title).split() if len(t) > 1 and t not in STOP]
+    return frozenset(t[:-1] if len(t) > 4 and t[-1] in "sx" else t for t in toks)
+
+
+@functools.lru_cache(maxsize=4096)
+def company_key(company: str) -> str:
+    """« Orange », « ORANGE SA », « Groupe Orange » -> « orange »."""
+    toks = [t for t in norm_text(company).split() if t not in GENERIC_CO]
+    return toks[0] if toks else ""
+
+
+def same_offer(c1: str, t1: str, c2: str, t2: str) -> bool:
+    """Même offre publiée sur deux sites (HelloWork / orange.jobs…) : même entreprise et intitulés presque identiques,
+    ou l'un contenu dans l'autre (l'historique note des intitulés abrégés : « Orange Résilience réseaux agents IA »)."""
+    k1, k2 = company_key(c1 or ""), company_key(c2 or "")
+    drop = {k1, k2} - {""}
+    A, B = title_tokens(t1 or "") - drop, title_tokens(t2 or "") - drop
+    if not A or not B:
+        return False
+    inter = len(A & B)
+    close = inter / len(A | B) >= 0.8 or (min(len(A), len(B)) >= 3 and inter / min(len(A), len(B)) >= 0.9)
+    if k1 and k2:
+        return k1 == k2 and close
+    # entreprise inconnue d'un côté : seulement un intitulé long et presque identique
+    return len(A) >= 6 and len(B) >= 6 and inter / len(A | B) >= 0.9
+
+
+DONE = ("applied", "already", "ready", "blocked_login", "docs_ready")
+
+
+def duplicate_of(company: str, title: str, exclude_key: str = "", statuses=DONE):
+    """Offre déjà traitée (postulée, CV prêt…) qui est la même que celle-ci, sous une autre clé ; sinon None."""
+    if not title:
+        return None
+    for r in q(f"SELECT key, company, title, status FROM offers WHERE status IN ({','.join('?' * len(statuses))})", statuses):
+        if r["key"] != exclude_key and same_offer(company, title, r["company"] or "", r["title"] or ""):
+            return r
+    return None
+
+
 # ---------- offres ----------
 def offer_seen(key: str, company: str = "", title: str = "") -> bool:
     if q("SELECT 1 FROM offers WHERE key=?", (key,)):
         return True
-    if company and title:
-        return bool(q("SELECT 1 FROM offers WHERE norm=? AND status IN ('applied','ready','blocked_login')",
-                      (offer_norm(company, title),)))
-    return False
+    return bool(duplicate_of(company, title, key))
 
 
 def upsert_offer(o: dict) -> None:
@@ -109,8 +156,22 @@ def set_status(key: str, status: str, reason: str = "", **kw) -> None:
 
 
 def applied_today_for(company: str) -> int:
-    return q("SELECT COUNT(*) n FROM offers WHERE status='applied' AND applied_at LIKE ? AND company=?",
-             (today() + "%", company))[0]["n"]
+    """Candidatures envoyées aujourd'hui à cette entreprise, quelle que soit l'écriture du nom (Orange, ORANGE SA…)."""
+    k = company_key(company or "")
+    rows = q("SELECT company FROM offers WHERE status='applied' AND applied_at LIKE ?", (today() + "%",))
+    return sum(1 for r in rows if (company_key(r["company"] or "") == k if k else (r["company"] or "") == (company or "")))
+
+
+def repair() -> int:
+    """Corrige ce qu'ont enregistré les versions précédentes : offre « déjà postulée » comptée comme envoyée aujourd'hui,
+    entreprise lue dans le bouton « Ajouter l'offre … aux favoris » de HelloWork."""
+    n = x("UPDATE offers SET status='already', applied_at=NULL WHERE status='applied' AND reason LIKE 'déjà postulé%'").rowcount
+    for r in q("SELECT key, company, title, data FROM offers WHERE company LIKE '%favoris%'"):
+        d = json.loads(r["data"] or "{}")
+        comp = d.get("company_ai") or (d.get("dossier") or "").split("_")[0]
+        x("UPDATE offers SET company=?, norm=? WHERE key=?", (comp, offer_norm(comp, r["title"] or ""), r["key"]))
+        n += 1
+    return n
 
 
 # ---------- contacts ----------

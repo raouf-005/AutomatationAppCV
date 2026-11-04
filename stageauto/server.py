@@ -25,6 +25,9 @@ _task = None
 async def _startup():
     providers.migrate_settings()
     db.import_seed()
+    fixed = db.repair()
+    if fixed:
+        log(f"{fixed} offre(s) corrigée(s) : « déjà postulé » n'est plus compté comme envoyé aujourd'hui, entreprise relue")
     n = db.requeue_ai_failures()
     if n:
         log(f"{n} offre(s) écartée(s) faute d'IA remises en attente")
@@ -126,9 +129,9 @@ async def state():
         "code": CODE, "state": st, "extension": bool(cdp.BRIDGE.ws), "backend": s.get("browser_backend"),
         "watch": {"enabled": s.get("watch_enabled", True), "interval": s.get("watch_interval_min", 30),
                   "hours": s.get("watch_hours")},
-        "ai": {"ready": providers.ready(), "order": [providers.label(p) for p in providers.providers_in_order()],
+        "ai": {"ready": providers.ready(wait=False), "order": [providers.label(p) for p in providers.providers_in_order(wait=False)],
                "primary": providers.label(s.get("llm_provider", "anthropic")),
-               "why": providers.configured(s.get("llm_provider", "anthropic"))[1]},
+               "why": providers.configured(s.get("llm_provider", "anthropic"), wait=False)[1]},
         "counts": counts, "applied_today": applied_today,
         "invites_today": db.invites_today(), "inmails_today": db.inmails_today(),
         "creds": vault.sites_with_creds(list(SITES) + ["gmail"]),
@@ -202,7 +205,7 @@ async def set_key(req: Request):
 
 @app.get("/api/ai")
 async def ai_info():
-    return providers.describe()
+    return providers.describe(wait=False)
 
 
 @app.post("/api/provider_key")
@@ -213,7 +216,12 @@ async def set_provider_key(req: Request):
         return {"ok": False}
     vault.set_provider_key(pid, (b.get("key") or "").strip())
     providers.reset()
-    return {"ok": True, "configured": providers.configured(pid)}
+    return {"ok": True, "configured": providers.configured(pid, wait=False)}
+
+
+@app.post("/api/claude_code_diag")
+async def claude_code_diag():
+    return await asyncio.to_thread(providers.claude_diag)
 
 
 @app.post("/api/test_ai")

@@ -77,6 +77,8 @@ MÉTHODE (rapidité) :
 RÉPONSES AUTORISÉES (n'utilise rien d'autre) : {json.dumps(PROFILE, ensure_ascii=False)}
 Source de l'offre : le site où elle a été trouvée, sinon « Autre ». Visa sponsorship : Non. Prêt à déménager : Oui.
 Années d'expérience : estimation honnête et prudente (1). Prétentions : « Selon la grille de l'entreprise ».
+Formation (établissement, diplôme, domaine, année de début « De », année de fin « À ») : la liste etudes, exactement comme
+sur le CV ; ce ne sont pas des données sensibles. Moyenne, notes, mention : laisser vide si facultatif, sinon finish blocked.
 
 INTERDITS (finish blocked, sans contourner) :
 - créer un compte, inventer ou saisir un mot de passe (seul fill_credentials le peut), données bancaires, pièce d'identité ;
@@ -168,8 +170,11 @@ class Agent:
         self.refs = {it["ref"]: it for it in snap["items"]}
         return self.render(snap, limit)
 
-    def _remember(self, label, options, value):
-        """Réponse donnée par l'agent : mémorisée pour que le remplissage automatique la reprenne la fois suivante."""
+    def _remember(self, label, options, value, section=""):
+        """Réponse donnée par l'agent : mémorisée pour que le remplissage automatique la reprenne la fois suivante.
+        Pas dans un bloc Formation / Expérience : « De », « À », « Établissement » y changent de sens d'une entrée à l'autre."""
+        if re.search(forms.EDU_SECTION_RE, forms.nrm(section or "")):
+            return
         if label and value and len(label) > 2 and not forms.BLOCK_RE.search(label):
             db.put_answer(label, options or None, value, source="agent")
 
@@ -238,13 +243,13 @@ class Agent:
             if token:
                 self.trace.append({"a": "type", "name": item.get("name", ""), "text": token})
             elif item.get("role", "").startswith(("textbox", "textarea", "combobox")) and len(text) < 300:
-                self._remember(item.get("name"), None, text)
+                self._remember(item.get("name"), None, text, item.get("section", ""))
             return "OK"
         if name == "select":
             item = self.refs.get(a["ref"], {})
             r = await tab.select(a["ref"], a["option"])
             if r and r.get("selected"):
-                self._remember(item.get("name"), item.get("options"), r["selected"])
+                self._remember(item.get("name"), item.get("options"), r["selected"], item.get("section", ""))
             return json.dumps(r, ensure_ascii=False)
         if name == "check":
             item = self.refs.get(a["ref"], {})

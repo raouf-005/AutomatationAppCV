@@ -12,11 +12,17 @@ from .forms import NeedLogin
 from .notify import log
 
 LINKS_JS = r"""(pat) => { const re = new RegExp(pat); const out = {};
+  // libellés de boutons (favoris, « Postuler »…) : jamais pris pour l'intitulé
+  const junk = t => !t || /favori/i.test(t) || /^(postuler|candidater|voir l.offre|enregistrer|sauvegarder|partager)$/i.test(t);
   document.querySelectorAll('a[href]').forEach(a => { const m = a.href.match(re); if (!m) return;
     const card = a.closest('li, article, [data-testid*=card], [class*=card], [class*=Card]') || a.parentElement || a;
     const lines = (card.innerText || a.innerText || '').split('\n').map(s => s.trim()).filter(s => s);
-    if (!out[m[1]] || lines.length > out[m[1]].lines.length)
-      out[m[1]] = {id: m[1], href: a.href.split('?')[0].split('#')[0], title: (a.innerText || '').trim().split('\n')[0], lines}; });
+    let t = (a.innerText || '').trim().split('\n')[0] || '';
+    if (junk(t)) { const h = card.querySelector('h1, h2, h3, h4'); t = h ? (h.innerText || '').trim().split('\n')[0] : ''; }
+    if (junk(t)) t = '';
+    const o = out[m[1]];
+    if (!o) out[m[1]] = {id: m[1], href: a.href.split('?')[0].split('#')[0], title: t, lines};
+    else { if (lines.length > o.lines.length) o.lines = lines; if (!o.title && t) o.title = t; } });
   return Object.values(out); }"""
 
 NOT_LOGGED_BTN = r"""(words) => [...document.querySelectorAll('a, button')].some(e => e.offsetParent !== null &&
@@ -27,11 +33,34 @@ RECENT_RE = re.compile(r"(il y a \d+\s*(min|minute|heure|h\b)|aujourd|à l'insta
 ALREADY_RE = re.compile(r"Suivi de candidature|Candidature envoyée|Déjà postulé|Vous avez postulé|Applied\b|Candidaté", re.I)
 
 
+FAV_RE = re.compile(r"^(?:ajouter|retirer|enregistrer|sauvegarder|supprimer)\s+(?:l['’]\s*offre|l['’]\s*annonce|cette offre)\b"
+                    r"(.*?)(?:\s+(?:aux|à vos|à mes|des|de vos|de mes|dans vos|dans mes)\s+favoris)?\.?$", re.I)
+BUTTON_RE = re.compile(r"^(?:postuler|candidater|voir l['’]offre|voir (?:plus|le détail)|en savoir plus|partager|enregistrer|"
+                       r"sauvegarder|save|saved|apply|easy apply|candidature (?:simplifiée|facile|rapide)|nouveau|nouvelle|new|"
+                       r"sponsorisée?|promoted|urgent)$", re.I)
+
+
+def junk_line(line: str) -> bool:
+    """Libellé de bouton lu dans une carte d'offre (« Ajouter l'offre … aux favoris », « Postuler », « Nouveau »…) :
+    ni un intitulé, ni une entreprise."""
+    t = (line or "").strip()
+    return bool(not t or FAV_RE.match(t) or BUTTON_RE.match(t) or re.search(r"\bfavoris?\b", t, re.I))
+
+
+def clean_title(t: str) -> str:
+    """« Ajouter l'offre Stage X aux favoris » -> « Stage X »."""
+    t = re.sub(r"\s+", " ", t or "").strip()
+    m = FAV_RE.match(t)
+    return m.group(1).strip(" -–—:") if m and m.group(1).strip(" -–—:") else t
+
+
 def card_offer(c, site, prefix, source):
     L = [l for l in c["lines"] if len(l) < 160]
-    title = c.get("title") or (L[0] if L else "")
-    rest = [l for l in L if l != title]
-    txt = " ".join(L)
+    txt = " ".join(L)  # avant filtrage : « Nouveau », « il y a 2 h » servent à la fraîcheur
+    title = clean_title(c.get("title") or "")
+    if junk_line(title):
+        title = next((clean_title(l) for l in L if not junk_line(l)), "")
+    rest = [l for l in L if l != title and not junk_line(l) and clean_title(l) != title]
     return {"key": f"{prefix}:{c['id']}", "site": site, "title": title, "company": rest[0] if rest else "",
             "location": rest[1] if len(rest) > 1 else "", "url": c["href"], "recent": bool(RECENT_RE.search(txt)),
             "already": bool(ALREADY_RE.search(txt)), "source": source, "card": txt[:500]}
@@ -387,6 +416,29 @@ class Orange(SiteDef):
     async def start(self, tab, offer):
         await tab.goto(f"https://orange.jobs/fr/fr/apply?jobSeqNo={offer['jobSeqNo']}" if offer.get("jobSeqNo") else offer["url"])
         return ""
+
+
+# Référence d'une offre d'après l'adresse de sa page : après une redirection (HelloWork, Indeed -> site de l'entreprise),
+# on reconnaît une offre déjà connue sous un autre site (même clé que dans l'historique : or:CTS-2026-54782, th:R0344762…).
+URL_KEYS = [
+    (r"orange\.jobs/.*?/job/([A-Za-z]{2,6}-\d{4}-\d+)", "or"),
+    (r"orange\.jobs/.*?[?&]jobSeqNo=([A-Za-z]{2,6}\d+[A-Za-z]{0,6})", None),  # numéro interne : pas de clé fiable
+    (r"linkedin\.com/jobs/view/(?:[^/?#]*?-)?(\d{6,})", "li"),
+    (r"jobs\.smartrecruiters\.com/[^/]+/(\d{6,})", "sr"),
+    (r"hellowork\.com/fr-fr/emplois/(\d+)\.html", "hw"),
+    (r"indeed\.[a-z.]+/.*?[?&](?:jk|vjk)=([0-9a-f]{8,})", "in"),
+    (r"jobteaser\.com/.*?/job-offers/([0-9a-f]{8}-[^/?#]+)", "jt"),
+    (r"welcometothejungle\.com/.*?/companies/[^/]+/jobs/([^/?#]+)", "wttj"),
+    (r"thales[^/]*\.myworkdayjobs\.com/.*?_(R\d{5,})", "th"),
+]
+
+
+def key_from_url(url: str) -> str:
+    for pat, prefix in URL_KEYS:
+        m = re.search(pat, url or "", re.I)
+        if m:
+            return f"{prefix}:{m.group(1)}" if prefix else ""
+    return ""
 
 
 SITES = {

@@ -69,18 +69,53 @@ def _conversation():
                                       name="candidature")
 
 
+RUNNER = Path(__file__).with_name("skillrun.py")
+_BROKEN: dict = {}  # build.py complet planté une fois : contrôle allégé pour la suite de la session
+
+
 def _tools_ok():
-    return all(shutil.which(t) for t in ("pdftotext", "pdfinfo", "pdffonts", "qpdf"))
+    return bool(generator.latex_bin()) and all(shutil.which(t) for t in ("pdftotext", "pdfinfo", "pdffonts", "qpdf"))
 
 
-def _build_full(w: Path, out: Path) -> tuple[bool, str]:
+def _build_env():
+    """Variables de LaTeX du générateur, dossier de pdflatex en tête du PATH (MiKTeX tout juste installé n'y est pas
+    toujours), et Python en UTF-8."""
     env = generator._env()
-    r = subprocess.run([sys.executable, str(SKILL / "scripts" / "build.py"), str(w), "--kw", "kw.txt", "--kw-opt", "kw-opt.txt",
-                        "--out", str(out)], cwd=w, env=env, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=240, creationflags=0x08000000 if IS_WIN else 0)
+    tex = generator.latex_bin()
+    if tex:
+        env["PATH"] = os.pathsep.join([os.path.dirname(tex), env.get("PATH", "")])
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def _last_line(txt: str) -> str:
+    lines = [l.strip() for l in (txt or "").splitlines() if l.strip()]
+    return lines[-1] if lines else ""
+
+
+def summary(errs: str, n: int = 220) -> str:
+    """Erreurs lisibles en une ligne : la cause d'une trace Python (sa dernière ligne), sinon les premières erreurs."""
+    if "Traceback (most recent call last)" in (errs or ""):
+        return _last_line(errs)[:n]
+    lines = [l.strip() for l in (errs or "").splitlines() if l.strip()]
+    return (" | ".join(lines[:3]))[:n] or "erreur inconnue"
+
+
+def _build_full(w: Path, out: Path) -> tuple[bool, str, str]:
+    """(réussi, erreurs signalées par build.py, plantage). plantage : cause d'un arrêt de build.py sur une exception."""
+    try:
+        r = subprocess.run([sys.executable, "-X", "utf8", str(RUNNER), str(SKILL / "scripts" / "build.py"), str(w),
+                            "--kw", "kw.txt", "--kw-opt", "kw-opt.txt", "--out", str(out)],
+                           cwd=w, env=_build_env(), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=300, creationflags=0x08000000 if IS_WIN else 0)
+    except subprocess.TimeoutExpired:
+        return False, "", "délai dépassé (MiKTeX télécharge peut-être des paquets)"
     log_txt = r.stdout + r.stderr
     errs = [l.strip() for l in log_txt.splitlines() if "ERREUR" in l or l.startswith("✗")]
-    return r.returncode == 0, "\n".join(errs)[:3000] or log_txt[-1500:]
+    if r.returncode and "Traceback (most recent call last)" in log_txt:
+        return False, "\n".join(errs), _last_line(log_txt)[:300]
+    return r.returncode == 0, "\n".join(errs)[:3000] or log_txt[-1500:], ""
 
 
 def _skill_module():
@@ -164,14 +199,23 @@ def generate(offer: dict) -> dict:
     dossier = re.sub(r"[^\w]+", "_", d.get("dossier") or d["company"]).strip("_")[:60]
     w = WORK / dossier
     out = w / "out"
-    full = _tools_ok()
+    full = _tools_ok() and not _BROKEN
     warnings = []
     for attempt in range(2):
         _write(w, d)
-        ok, errs = _build_full(w, out) if full else _build_lite(w, out, d.get("kw", []))
+        if full:
+            ok, errs, crash = _build_full(w, out)
+            if crash:
+                # build.py lui-même en panne (outil absent, exception) : l'IA ne peut rien y corriger
+                log(f"build.py du skill arrêté : {crash} — contrôle allégé à la place")
+                if not crash.startswith("délai"):
+                    _BROKEN["full"] = crash
+                full = False
+        if not full:
+            ok, errs = _build_lite(w, out, d.get("kw", []))
         if ok:
             break
-        log(f"build {dossier} : erreurs ({'tentative ' + str(attempt + 1)})")
+        log(f"build {dossier} : {summary(errs)} (tentative {attempt + 1})")
         if attempt == 0:
             try:
                 d2 = conv.ask("build.py signale ces erreurs. Corrige-les en une fois et renvoie l'objet complet "
@@ -192,9 +236,9 @@ def generate(offer: dict) -> dict:
                 generator.neutralise(p)
                 shutil.copy(p, out)
             pdfs = _docs(out)
-            warnings.append("contrôles ATS non parfaits : " + errs[:300])
+            warnings.append("contrôles ATS non parfaits : " + summary(errs, 300))
         else:
-            return _fallback(offer, "build du skill en échec : " + errs[:200])
+            return _fallback(offer, "build du skill en échec : " + summary(errs))
     cv = next(p for p in pdfs if p.name.startswith("CV_"))
     lm = next(p for p in pdfs if not p.name.startswith("CV_"))
     lettre_tex = next(iter(w.glob("Lettre_*.tex")), None) or next(iter(w.glob("Cover_Letter_*.tex")), None)

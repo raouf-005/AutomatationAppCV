@@ -101,8 +101,14 @@ def compile_tex(texfile: Path) -> tuple[bool, str]:
 
 
 def pages(pdf: Path) -> int:
+    """Nombre de pages ; 0 si le PDF est absent, vide ou illisible (compilation interrompue)."""
     from pypdf import PdfReader
-    return len(PdfReader(str(pdf)).pages)
+    try:
+        if Path(pdf).stat().st_size == 0:
+            return 0
+        return len(PdfReader(str(pdf)).pages)
+    except Exception:
+        return 0
 
 
 ACTIF = ("/OpenAction", "/AA", "/Names", "/AcroForm", "/Outlines", "/PageMode", "/JavaScript")
