@@ -731,6 +731,11 @@ async def run_pass(trigger="manuel", mode="full"):
                     await stream(browser, select_new(await gather_offers(browser, back, hours)), summary)
                 summary["missing"] = [SITES[k].name for k, ok in again.items() if ok is False]
             await retry_blocked_login(browser, summary)
+    except cdp.NoBrowser as e:
+        summary["no_browser"] = True
+        phase("en attente de Chrome", str(e)[:120])
+        if db.once(f"nobrowser:{db.today()}:{dt.datetime.now().hour}"):
+            push("StageAuto attend Chrome", str(e))
     except Exception as e:
         log(f"passage interrompu : {e.__class__.__name__} {e}", "error")
         push("StageAuto : passage interrompu", str(e)[:200])
@@ -740,7 +745,10 @@ async def run_pass(trigger="manuel", mode="full"):
         STATE["lanes"] = {}
         text = recap(summary)
         STATE["summary"] = text
-        db.x("UPDATE runs SET ended=?, summary=? WHERE id=?", (db.now(), f"[{mode}] " + text, run_id))
+        if summary.get("no_browser"):  # rien n'a été cherché : ce passage ne doit pas raccourcir la période suivante
+            db.x("DELETE FROM runs WHERE id=?", (run_id,))
+        else:
+            db.x("UPDATE runs SET ended=?, summary=? WHERE id=?", (db.now(), f"[{mode}] " + text, run_id))
         priority.refresh_recipes()
         phase("terminé", "veille" if quick else "")
         if quick:

@@ -84,6 +84,9 @@ DEFAULT_SETTINGS = {
     "watch_hours": "08:00-22:00",
     "linkedin_watch_min": 60,         # LinkedIn : une recherche par heure au plus en veille
     "watch_sites": [],                # vide = tous les sites actifs
+    "dashboard_window": False,        # tableau de bord dans une fenêtre à part (sinon : un onglet de ton Chrome)
+    "single_window": True,            # une seule fenêtre Chrome StageAuto (LinkedIn et autres sites en onglets)
+    "dedicated_chrome_fallback": False,  # jamais de second Chrome (Playwright) si l'extension manque : on attend ton Chrome
     "local_backup": True,             # Ollama / LM Studio sur ce PC : dernier recours si toutes les autres IA échouent
     "rule_only_today": True,          # règles (onglet Règles) : offres publiées aujourd'hui seulement
     "rule_linkedin_first": True,      # LinkedIn d'abord

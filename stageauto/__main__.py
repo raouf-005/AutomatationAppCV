@@ -133,7 +133,13 @@ def open_ui():
                     os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe")):
             if os.path.exists(exe):
                 try:
-                    subprocess.Popen([exe, f"--app={url}", "--window-size=1280,900"])
+                    # onglet dans ton Chrome déjà ouvert (pas de fenêtre en plus) ; réglage dashboard_window pour l'ancienne
+                    # fenêtre séparée
+                    from .config import load_settings
+                    if load_settings().get("dashboard_window", False):
+                        subprocess.Popen([exe, f"--app={url}", "--window-size=1280,900"])
+                    else:
+                        subprocess.Popen([exe, url])
                     return
                 except OSError:
                     continue

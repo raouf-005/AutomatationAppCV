@@ -127,6 +127,17 @@ l'aperçu. Un e-mail non lu est remis en « non lu » après lecture, pour ne pa
 sont pas prises pour des réponses. Le bouton **Exporter (CSV)** de l'onglet Offres donne toutes les candidatures, avec
 la réponse reçue, dans un fichier pour Excel.
 
+## Une seule fenêtre Chrome
+
+- Tous les onglets de StageAuto (lecture des offres, LinkedIn, autres sites) s'ouvrent dans **une seule fenêtre** de ton
+  Chrome ; LinkedIn et les autres sites y travaillent en parallèle, dans des onglets différents (réglage `single_window`).
+- **Jamais de second Chrome** : si l'extension n'est pas connectée, l'application n'ouvre plus de « Chrome dédié ». Si
+  Chrome est fermé, elle ouvre **ton** Chrome (ton profil, tes connexions) et attend l'extension ; sinon elle prévient
+  « StageAuto attend Chrome » et le passage suivant réessaie, sans raccourcir la période de recherche (aucune offre perdue).
+  Réglage `dedicated_chrome_fallback` pour revenir à l'ancien comportement.
+- Le tableau de bord s'ouvre dans un **onglet** de ton Chrome, plus dans une fenêtre à part (réglage `dashboard_window`).
+- Après la mise à jour, ferme une fois les anciennes fenêtres StageAuto en trop (celles des voies 1 et 2).
+
 ## Mon profil, mes fichiers, tous les paramètres
 
 - **Onglet Mon profil** : tout ce que l'application sait de toi, modifiable. En haut, les réponses des formulaires

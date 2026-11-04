@@ -12,12 +12,14 @@ import base64
 import itertools
 import json
 import mimetypes
+import os
 import random
 import re
+import subprocess
 import time
 from pathlib import Path
 
-from .config import CHROME_PROFILE, load_settings
+from .config import CHROME_PROFILE, IS_WIN, load_settings
 from .notify import log
 
 
@@ -724,6 +726,8 @@ class ExtensionBrowser(Browser):
         return await BRIDGE.call("cdp", tabId=tid, method=method, params=params) or {}
 
     async def new_tab(self, url=None, lane=0):
+        if load_settings().get("single_window", True):
+            lane = 0  # une seule fenêtre StageAuto : LinkedIn et les autres sites y ouvrent leurs onglets côte à côte
         r = await BRIDGE.call("tabs.create", url="about:blank", lane=lane)
         t = Tab(self, r["tabId"])
         if url:  # navigation après coup : le curseur persistant est installé avant le chargement de la page
@@ -826,6 +830,35 @@ class PlaywrightBrowser(Browser):
 _browser = None
 
 
+class NoBrowser(Exception):
+    """Extension non connectée et pas de Chrome dédié de secours : rien n'est fait, le passage suivant réessaie."""
+
+
+def _chrome_running() -> bool:
+    if not IS_WIN:
+        return True
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/NH"], capture_output=True, text=True,
+                             timeout=15, creationflags=0x08000000).stdout.lower()
+        return "chrome.exe" in out
+    except Exception:
+        return True
+
+
+def _start_user_chrome() -> bool:
+    """Chrome fermé : on lance TON Chrome (ton profil, ton extension), une seule fenêtre, jamais un second navigateur."""
+    if not IS_WIN or _chrome_running():
+        return False
+    for exe in (os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+                os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+                os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe")):
+        if os.path.exists(exe):
+            subprocess.Popen([exe])
+            log("Chrome était fermé : ouverture de ton Chrome pour que l'extension se connecte")
+            return True
+    return False
+
+
 async def get_browser(wait_ext=8.0, patient=False) -> Browser:
     """Extension si elle est connectée (ou le devient), sinon Chrome dédié via Playwright.
     patient : pour un passage, attend jusqu'à ~2 min une extension déjà utilisée auparavant (elle se reconnecte
@@ -849,7 +882,19 @@ async def get_browser(wait_ext=8.0, patient=False) -> Browser:
             _browser = ExtensionBrowser()
             return _browser
         except asyncio.TimeoutError:
-            log("Extension Chrome absente : repli sur le Chrome dédié (Playwright)")
+            pass
+        if not load_settings().get("dedicated_chrome_fallback", False):
+            # jamais de second Chrome : ton Chrome est ouvert s'il était fermé, sinon on attend l'extension
+            if patient and _start_user_chrome():
+                try:
+                    await asyncio.wait_for(BRIDGE.connected.wait(), 90)
+                    _browser = ExtensionBrowser()
+                    return _browser
+                except asyncio.TimeoutError:
+                    pass
+            raise NoBrowser("l'extension StageAuto Bridge n'est pas connectée : ouvre Chrome (ton profil) ; si elle ne se "
+                            "reconnecte pas, clique son icône puis « Reconnecter »")
+        log("Extension Chrome absente : repli sur le Chrome dédié (Playwright)")
     pb = PlaywrightBrowser()
     await pb.start()
     _browser = pb

@@ -18,6 +18,11 @@ from .notify import ALERTS, LOG, log
 from .sites import SITES
 
 app = FastAPI(title="StageAuto")
+
+
+@app.exception_handler(cdp.NoBrowser)
+async def _no_browser(request, exc):
+    return JSONResponse({"ok": False, "error": str(exc)})
 _task = None
 
 
