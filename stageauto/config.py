@@ -84,6 +84,10 @@ DEFAULT_SETTINGS = {
     "watch_hours": "08:00-22:00",
     "linkedin_watch_min": 60,         # LinkedIn : une recherche par heure au plus en veille
     "watch_sites": [],                # vide = tous les sites actifs
+    "rule_only_today": True,          # règles (onglet Règles) : offres publiées aujourd'hui seulement
+    "rule_linkedin_first": True,      # LinkedIn d'abord
+    "rule_cv_lang": True,             # CV en anglais si l'offre le demande (ou est en anglais), sinon en français
+    "rules_custom": "",               # règles libres, une par ligne, transmises à l'IA
     "sweep_time": "22:30",            # rattrapage du soir : toutes les sources sur 26 h (vide = désactivé)
     "sources_pages_per_pass": 12,     # sites carrières lus dans Chrome par passage complet (tous au rattrapage)
     "max_result_pages": 4,            # pages de résultats lues par recherche lors des passages complets

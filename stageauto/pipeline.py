@@ -17,7 +17,7 @@ import re
 import shutil
 from pathlib import Path
 
-from . import cdp, cvskill, db, gmail, linkedin_contacts, priority, providers, replay, sources, vault  # sources : « carrieres »
+from . import cdp, cvskill, db, gmail, linkedin_contacts, priority, providers, replay, rules, sources, vault  # sources : « carrieres »
 from .agent import Agent
 from .config import CANDIDATURES, DOMAIN_NEG, DOMAIN_POS, WORK, load_settings
 from .forms import NeedLogin, nrm
@@ -156,6 +156,9 @@ def select_new(offers):
             continue
         if db.offer_seen(o["key"], o.get("company", ""), o.get("title", "")):
             continue
+        if rules.only_today() and not rules.is_today(o):  # règle « offres du jour seulement »
+            db.upsert_offer({**o, "status": "ignored", "reason": "règle : offre publiée avant aujourd'hui"})
+            continue
         # la même offre listée par deux sites dans ce passage (HelloWork + orange.jobs…) : une seule candidature
         if any(db.same_offer(o.get("company", ""), o.get("title", ""), c, t) for c, t in kept):
             continue
@@ -177,7 +180,7 @@ def select_new(offers):
         per_source[k] = per_source.get(k, 0) + 1
     for k, n in per_source.items():
         db.coverage_add(k, new=n)
-    keep.sort(key=lambda o: -o["score"])
+    keep = rules.order(keep)  # règle « LinkedIn d'abord », puis priorité
     return keep[: s.get("max_applications_per_pass", 40) * 2]
 
 
@@ -255,7 +258,7 @@ async def apply_one(browser, o, lane=1):
             goal = (f"Postule à l'offre de stage « {o['title']} » chez {o['company']} ({o['url']}) avec le CV et la lettre "
                     f"fournis (upload cv / lettre ; texte de motivation : @@LETTRE@@ ; message court : @@MESSAGE@@). {extra} "
                     "Si le site exige de créer un compte, une vidéo ou un captcha : finish blocked/needs_login. "
-                    "Succès constaté : finish applied.")
+                    "Succès constaté : finish applied." + (("\n\n" + rules.prompt_block()) if rules.custom() else ""))
             ag = Agent(browser, tab, o["site"], files, o)
             ag.recipe_key = rkey
             if res:
@@ -471,7 +474,7 @@ async def verify_applications(browser, applied):
 
 
 # offres écartées volontairement (pas des échecs de candidature) : jamais proposées au réessai groupé
-REJECT_RE = re.compile(r"^(non éligible|pré-tri|hors domaine|descriptif illisible|historique|déjà postulé|plafond|"
+REJECT_RE = re.compile(r"^(non éligible|pré-tri|règle|hors domaine|descriptif illisible|historique|déjà postulé|plafond|"
                        r"en attente de l.IA)", re.I)
 
 
@@ -643,7 +646,7 @@ async def run_pass(trigger="manuel", mode="full"):
         if missing and not quick:
             push("Connecte-toi à : " + ", ".join(missing),
                  "Dans Chrome (ou bouton « Se connecter » du tableau de bord) – je postule dès que c'est fait.")
-        hours = 26.0 if mode == "sweep" else window_hours(quick)
+        hours = rules.window(26.0 if mode == "sweep" else window_hours(quick))  # règle « offres du jour » : depuis minuit
         if not await asyncio.to_thread(providers.ready):  # recherche de Claude Code possible : hors de la boucle
             # sans IA (limite atteinte, pas de clé) : on cherche quand même, les offres attendent l'IA dans l'ordre de
             # priorité, et les CV déjà prêts partent si la méthode du site est connue (sans IA)
@@ -683,8 +686,9 @@ async def run_pass(trigger="manuel", mode="full"):
         phase("recherche", f"offres des {hours:.1f} dernières heures ({', '.join(ok_ids)})")
         offers = select_new(await find_offers(browser, ok_ids, hours, quick))
         keys = {o["key"] for o in offers}
-        offers += [o for o in db.pending_ai_offers() if o["key"] not in keys and o.get("site") in SITES]  # en attente de l'IA
-        resume = pending_ready()
+        offers += rules.keep_today([o for o in db.pending_ai_offers() if o["key"] not in keys and o.get("site") in SITES])
+        offers = rules.order(offers)
+        resume = rules.order(rules.keep_today(pending_ready()))
         phase("candidatures", f"{len(offers)} nouvelles offres, {len(resume)} CV prêts en attente")
         await stream(browser, offers, summary, resume)
         if summary["applied"]:

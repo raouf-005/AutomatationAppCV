@@ -14,7 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import llm, providers
+from . import llm, providers, rules
 from .config import IS_WIN, SKILL_DIR, WORK, load_settings
 from .gen import generator
 from .notify import log
@@ -54,7 +54,8 @@ def _system():
             "DevOps/DevSecOps, cloud/infra, automatisation, IA appliquée à la cyber ; non éligible si alternance, CDI, "
             "moins de 6 mois, autre domaine, nationalité française/citoyenneté UE/habilitation exigée, poste situé hors de "
             "France, ou exigence clé absente du profil (outils interdits du skill compris). Si non éligible : cv_tex et lettre_tex vides.\n"
-            "Offre en anglais : CV et lettre en anglais selon references/english.md.\n\n"
+            "Langue : la LANGUE IMPOSÉE indiquée avec l'offre l'emporte (anglais si l'offre demande un CV en anglais ou est "
+            "rédigée en anglais, sinon français ; « anglais courant exigé » ne suffit pas) ; en anglais, suivre references/english.md.\n\n"
             f"===== SKILL.md =====\n{skill}\n\n===== references/profil.md =====\n{profil}\n\n"
             f"===== references/english.md =====\n{english}")
 
@@ -197,7 +198,7 @@ def generate(offer: dict) -> dict:
     if load_settings().get("cv_mode") == "rapide":  # modèles + adaptation courte : ~4 fois plus rapide que le skill complet
         return _fallback(offer, "mode CV rapide")
     user = (f"OFFRE (source : {offer.get('site')}, URL : {offer.get('url')})\nEntreprise : {offer.get('company')}\n"
-            f"Intitulé : {offer.get('title')}\nLieu : {offer.get('location')}\n\n{(offer.get('description') or '')[:14000]}")
+            f"Intitulé : {offer.get('title')}\nLieu : {offer.get('location')}\n\n{(offer.get('description') or '')[:14000]}" + (("\n\n" + rules.prompt_block(offer)) if rules.prompt_block(offer) else ""))
     conv = _conversation()
     try:
         d = conv.ask(user)

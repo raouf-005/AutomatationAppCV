@@ -127,6 +127,17 @@ l'aperçu. Un e-mail non lu est remis en « non lu » après lecture, pour ne pa
 sont pas prises pour des réponses. Le bouton **Exporter (CSV)** de l'onglet Offres donne toutes les candidatures, avec
 la réponse reçue, dans un fichier pour Excel.
 
+## Règles (onglet Règles)
+
+Modifiables à tout moment, appliquées à chaque passage :
+- **Offres du jour seulement** (activé) : recherche limitée à depuis minuit ; une offre d'hier ou plus ancienne (date du
+  site, « il y a 3 jours », « publiée hier ») est écartée avec la raison « règle : offre publiée avant aujourd'hui ».
+- **LinkedIn d'abord** (activé) : les offres LinkedIn passent en tête pour la préparation des CV et les candidatures.
+- **Langue du CV** (activé) : CV et lettre en anglais si l'offre demande un CV en anglais (« CV en anglais », « resume in
+  English »…) ou est rédigée en anglais ; sinon en français. « Anglais courant exigé » ne suffit pas.
+- **Mes règles** : une par ligne, transmises à l'IA pour le CV, la lettre et les formulaires. Les interdits du profil
+  (nationalité, habilitation, compte à créer, données sensibles) restent toujours prioritaires.
+
 ## Réessayer les candidatures échouées
 
 Une candidature qui n'a pas abouti (erreur, connexion demandée, formulaire bloquant) apparaît dans la carte

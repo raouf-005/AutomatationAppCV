@@ -4,7 +4,7 @@
 - translate_tex : traduction d'un .tex (offre en anglais, repli)."""
 import re
 
-from . import providers
+from . import providers, rules
 from .config import BANNED_TOOLS, PROFILE, SKILL_DIR, TPL_DIR, load_settings
 from .notify import log
 
@@ -54,7 +54,8 @@ def _tailor_system():
 
 def tailor(offer: dict) -> dict | None:
     user = (f"Entreprise : {offer.get('company')}\nIntitulé : {offer.get('title')}\nLieu : {offer.get('location')}\n"
-            f"Source : {offer.get('site')}\n\nDescription :\n{(offer.get('description') or '')[:12000]}")
+            f"Source : {offer.get('site')}\n\nDescription :\n{(offer.get('description') or '')[:12000]}"
+            + (("\n\n" + rules.prompt_block(offer)) if rules.prompt_block(offer) else ""))
     conv = providers.JsonConversation(_tailor_system(), TAILOR_SCHEMA, max_tokens=16000, effort="medium", name="adaptation")
     d = conv.ask(user)
     if d is None:

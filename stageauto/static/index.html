@@ -80,7 +80,7 @@ a{color:var(--accent)}
   <section class="card">
     <nav class="tabs" id="tabs">
       <button data-t="offres" class="on">Offres</button><button data-t="contacts">Contacts LinkedIn</button>
-      <button data-t="reponses">Réponses</button><button data-t="sources">Sources</button>
+      <button data-t="regles">Règles</button><button data-t="reponses">Réponses</button><button data-t="sources">Sources</button>
       <button data-t="journal">Journal</button><button data-t="notes">Mémoire et apprentissage</button><button data-t="reglages">Réglages</button>
     </nav>
     <div data-p="offres">
@@ -95,6 +95,21 @@ a{color:var(--accent)}
       <div class="tablewrap"><table><thead><tr><th>Entreprise</th><th>Offre</th><th>Site</th><th>Statut</th><th>Détail</th><th>PDF</th><th></th></tr></thead><tbody id="otable"></tbody></table></div>
     </div>
     <div data-p="contacts" hidden><div class="tablewrap"><table><thead><tr><th>Date</th><th>Entreprise</th><th>Personne</th><th>Rôle</th><th>Statut</th></tr></thead><tbody id="ctable"></tbody></table></div></div>
+    <div data-p="regles" hidden>
+      <h2>Règles de candidature</h2>
+      <p class="muted">Appliquées à chaque passage. Les interdits du profil (nationalité, habilitation, compte à créer, données
+        sensibles…) restent toujours prioritaires.</p>
+      <label class="f"><span><input type="checkbox" id="s_rule_only_today"> <b>Offres du jour seulement</b> : publiées aujourd'hui
+        (recherche limitée à depuis minuit ; une offre d'hier ou plus ancienne est écartée)</span></label>
+      <label class="f"><span><input type="checkbox" id="s_rule_linkedin_first"> <b>LinkedIn d'abord</b> : les offres LinkedIn passent en tête
+        (CV préparés et candidatures envoyées en premier)</span></label>
+      <label class="f"><span><input type="checkbox" id="s_rule_cv_lang"> <b>Langue du CV</b> : en anglais si l'offre demande un CV en
+        anglais (ou est rédigée en anglais), sinon en français. « Anglais courant exigé » ne suffit pas.</span></label>
+      <label class="f">Mes règles (une par ligne, transmises à l'IA pour le CV, la lettre et les formulaires)
+        <textarea id="s_rules_custom" rows="6" placeholder="ex. Mettre en avant le projet SOC dans les offres de cybersécurité défensive&#10;Ne pas postuler aux offres en télétravail complet"></textarea></label>
+      <button class="primary" onclick="saveSettings().then(() => $('#rulesmsg').textContent = '✓ Règles enregistrées')">Enregistrer les règles</button>
+      <span class="muted" id="rulesmsg"></span>
+    </div>
     <div data-p="reponses" hidden>
       <p class="muted">Réponses des recruteurs lues dans tes boîtes Gmail (à chaque passage complet, et toutes les heures pendant la
         veille) : <b>offre / acceptation</b>, <b>échange / entretien</b> (créneau proposé, disponibilités demandées), refus.
@@ -218,6 +233,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
   if (b.dataset.t === 'offres') loadOffers(); if (b.dataset.t === 'contacts') loadContacts();
   if (b.dataset.t === 'notes') { loadNotes(); loadLearning(); } if (b.dataset.t === 'reglages') loadSettings();
   if (b.dataset.t === 'sources') loadSources(); if (b.dataset.t === 'reponses') loadReplies();
+  if (b.dataset.t === 'regles') { $('#rulesmsg').textContent = ''; loadSettings(); }
 });
 const VERIF = {page: 'confirmation affichée', linkedin: 'confirmée par LinkedIn', email: 'accusé de réception reçu', 'à vérifier': 'à vérifier'};
 function verif(v) { if (!v) return ''; const warn = v === 'à vérifier';
