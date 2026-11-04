@@ -171,6 +171,16 @@ def repair() -> int:
         comp = d.get("company_ai") or (d.get("dossier") or "").split("_")[0]
         x("UPDATE offers SET company=?, norm=? WHERE key=?", (comp, offer_norm(comp, r["title"] or ""), r["key"]))
         n += 1
+    # CV faits avec les modèles de secours parce que build.py plantait sous Windows (ou PDF vide) : refaits une fois avec
+    # le skill au prochain passage, avant l'envoi
+    for r in q("SELECT key, data FROM offers WHERE (status='docs_ready' AND reason LIKE '%build du skill en%') "
+               "OR (status='error' AND reason LIKE '%EmptyFileError%')"):
+        if json.loads(r["data"] or "{}").get("cv_redo"):
+            continue
+        x("UPDATE offers SET status='pending_ai', reason=? WHERE key=?",
+          ("CV à refaire avec le skill (modèles de secours utilisés avant la correction)", r["key"]))
+        set_data(r["key"], cv_redo=1)
+        n += 1
     return n
 
 
