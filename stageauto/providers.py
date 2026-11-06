@@ -77,6 +77,10 @@ def model_of(pid) -> str:
     if pid == "anthropic":
         return s.get("model", "claude-opus-5-5")
     m = (s.get("models") or {}).get(pid, "") or ""
+    if pid == "claude_code" and m in ("", None):
+        return "sonnet"  # Claude Code : Sonnet par défaut (rapide, n'épuise pas les limites d'Opus) ; réglable dans Réglages → IA
+    if m == "défaut":
+        return ""
     if not m and pid == "ollama" and s.get("local_backup", True):
         m = ollama_auto_model()
     return m
@@ -574,7 +578,31 @@ def ollama_chat(payload: dict) -> dict:
     m = {"role": "assistant", "content": msg.get("content") or ""}
     if calls:
         m["tool_calls"] = calls
-    return {"choices": [{"message": m, "finish_reason": "tool_calls" if calls else "stop"}]}
+    j = r.json()
+    return {"choices": [{"message": m, "finish_reason": "tool_calls" if calls else "stop"}],
+            "_stats": {k: j.get(k) or 0 for k in ("prompt_eval_count", "prompt_eval_duration", "eval_count", "eval_duration",
+                                                    "load_duration")}}
+
+
+def ollama_estimate() -> dict:
+    """Mesure la vitesse du modèle local (lecture et écriture, en jetons/s) sur une demande de la taille d'une étape réelle,
+    et en déduit le temps d'une candidature : CV + lettre (adaptation courte, compilation) puis formulaire (~8 étapes)."""
+    filler = ("Profil : étudiant en Master 2 Sécurité et Réseaux, stage de fin d'études de 6 mois, cybersécurité, SOC, "
+              "réseaux, DevOps. ") * 60  # ~1 500 jetons, comme une étape de formulaire
+    payload = {"model": model_of("ollama"), "max_tokens": 160,
+               "messages": [{"role": "system", "content": "Réponds en français."},
+                            {"role": "user", "content": filler + "\nÉcris un paragraphe de motivation de 100 mots."}]}
+    ollama_chat(payload)  # chargement du modèle en mémoire (non compté)
+    st = ollama_chat(payload)["_stats"]
+    pp = st["prompt_eval_count"] / max(st["prompt_eval_duration"] / 1e9, 1e-3) if st["prompt_eval_count"] else 0
+    gen = st["eval_count"] / max(st["eval_duration"] / 1e9, 1e-3) if st["eval_count"] else 0
+    if not gen:
+        return {}
+    pp = pp or gen * 8
+    cv = 3000 / pp + 700 / gen + 15          # adaptation courte (lecture de l'offre, réponse) + compilation LaTeX
+    form = 8 * (1500 / pp + 120 / gen + 3)  # 8 étapes : page lue, action décidée, action faite dans Chrome
+    return {"lecture_tok_s": round(pp), "ecriture_tok_s": round(gen, 1), "cv_s": round(cv), "formulaire_s": round(form),
+            "total_min": round((cv + form) / 60, 1)}
 
 
 def oa_post(payload: dict, pid: str) -> dict:
@@ -793,7 +821,13 @@ def test(pid: str) -> dict:
         d = conv.ask("Réponds ok=true et mot=\"bonjour\".")
         if not d:
             return {"ok": False, "error": "réponse illisible"}
-        return {"ok": True, "answer": d, "seconds": round(time.time() - t0, 1)}
+        out = {"ok": True, "answer": d, "seconds": round(time.time() - t0, 1)}
+        if pid == "ollama" and load_settings().get("ollama_native", True):
+            try:
+                out["estimate"] = ollama_estimate()
+            except Exception as e:
+                log(f"estimation Ollama : {e.__class__.__name__}")
+        return out
     except Exception as e:
         return {"ok": False, "error": f"{e.__class__.__name__} : {str(e)[:250]}"}
 

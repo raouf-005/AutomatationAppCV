@@ -197,6 +197,8 @@ def generate(offer: dict) -> dict:
         return {"ok": False, "eligible": None, "retry": True, "reason": "aucune clé d'IA configurée"}
     if load_settings().get("cv_mode") == "rapide":  # modèles + adaptation courte : ~4 fois plus rapide que le skill complet
         return _fallback(offer, "mode CV rapide")
+    if local_first():  # petit modèle local : le skill complet le dépasse ; modèles du profil + adaptation courte
+        return _fallback(offer, "modèle local : modèles du profil adaptés")
     user = (f"OFFRE (source : {offer.get('site')}, URL : {offer.get('url')})\nEntreprise : {offer.get('company')}\n"
             f"Intitulé : {offer.get('title')}\nLieu : {offer.get('location')}\n\n{(offer.get('description') or '')[:14000]}" + (("\n\n" + rules.prompt_block(offer)) if rules.prompt_block(offer) else ""))
     conv = _conversation()
@@ -275,10 +277,15 @@ def generate(offer: dict) -> dict:
             "ville": d.get("ville"), "recruteur": d.get("recruteur"), "warnings": warnings, "folder": str(out)}
 
 
+def local_first() -> bool:
+    order = providers.providers_in_order()
+    return bool(order) and order[0] in providers.LOCAL
+
+
 def _fallback(offer, why):
     log(f"repli modèles : {why}")
     try:
-        t = llm.tailor(offer)
+        t = llm.tailor_local(offer) if local_first() else llm.tailor(offer)
     except Exception as e:  # problème d'IA (clé, crédit, réseau) : l'offre sera reprise, pas ignorée
         return {"ok": False, "eligible": None, "retry": True, "reason": f"{why} ; IA indisponible ({e.__class__.__name__})"}
     if t is None:

@@ -163,6 +163,12 @@ Coché par défaut (Réglages → IA) : si toutes les autres IA échouent ou son
 Ollama prend le relais, toujours en dernier. Installe Ollama (ollama.com), puis dans un terminal `ollama pull qwen2.5:14b`
 (ou `qwen2.5:7b` si le PC a peu de mémoire). Le modèle est choisi tout seul parmi ceux installés ; aucun réglage à faire.
 Un petit modèle écrit moins bien les CV et remplit moins bien les formulaires : c'est un secours, pas un remplaçant.
+Petit modèle (moins de 9 milliards de paramètres, ex. `qwen2.5:7b`, `llama3.1:8b`) : quand le modèle local est l'IA
+utilisée, les CV et lettres passent par un mode dédié : le modèle de CV du domaine est choisi sans IA, le modèle ne
+reçoit que des consignes courtes (environ 2 000 caractères au lieu de 40 000) et l'offre résumée, il écrit seulement
+l'accroche, le « pourquoi vous » et le message ; les puces restent celles de ton profil et un mot-clé qu'il proposerait
+sans que tu l'aies (ou un outil interdit) est écarté. Après « Enregistrer et tester l'IA », une **estimation** s'affiche :
+temps par candidature (CV et lettre, formulaire) calculé à partir des vitesses mesurées du modèle.
 Rendement : Ollama est appelé par son API native avec un contexte de 16 384 jetons (réglage `local_ctx` ; par défaut
 Ollama coupe les longues consignes sans prévenir), un JSON contraint par le schéma (CV toujours lisible), une température
 basse et le modèle gardé en mémoire 30 min entre deux appels.
@@ -179,6 +185,11 @@ Modifiables à tout moment, appliquées à chaque passage :
   (nationalité, habilitation, compte à créer, données sensibles) restent toujours prioritaires.
 
 ## Liste des offres
+
+Offre « CV prêt » : boutons **Ouvrir l'offre** (pour postuler toi-même), lien vers le CV et la lettre (colonne PDF),
+**J'ai postulé** (candidature enregistrée, CV et lettre copiés dans « envoyées », vérification « postulée à la main »)
+et **Postuler auto** (candidature automatique tout de suite). Claude Code utilise Sonnet par défaut (Réglages → IA :
+Sonnet, Opus, Haiku ou le réglage de Claude Code).
 
 Par défaut, l'onglet Offres n'affiche plus les offres non compatibles (non éligibles, pré-tri, hors domaine, publiées
 avant aujourd'hui) : le filtre « Écartées » les montre quand même. Chaque échec a son bouton « Réessayer », dans la

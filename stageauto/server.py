@@ -195,6 +195,26 @@ async def retry(req: Request):
     return {"ok": True, "count": len(keys), "started": started}
 
 
+@app.post("/api/mark_applied")
+async def mark_applied(req: Request):
+    """« J'ai postulé » : candidature faite à la main avec le CV prêt ; enregistrée comme les autres (CV et lettre copiés)."""
+    key = (await req.json()).get("key", "")
+    r = db.q("SELECT * FROM offers WHERE key=?", (key,))
+    if not r:
+        return {"ok": False, "error": "offre introuvable"}
+    o = {**r[0], **json.loads(r[0]["data"] or "{}")}
+    folder = ""
+    if o.get("cv") and o.get("dossier"):
+        try:
+            folder = pipeline.archive(o)
+        except Exception:
+            folder = ""
+    db.set_status(key, "applied", "postulé à la main", folder=folder or o.get("gen_folder") or None)
+    db.set_data(key, verified="manuel")
+    log(f"✓ candidature faite à la main : {o.get('company')} — {o.get('title', '')[:60]}")
+    return {"ok": True}
+
+
 @app.get("/api/failed")
 async def failed(days: int = 1):
     return pipeline.failed_offers(days)
@@ -229,6 +249,8 @@ async def offers(status: str = "", days: int = 7):
         d = json.loads(r.pop("data") or "{}")
         r["verified"], r["score"], r["reponse"] = d.get("verified", ""), d.get("score"), d.get("reponse", "")
         r["retryable"] = pipeline.is_failed(r["status"], r["reason"], d)
+        if not r["folder"] and d.get("gen_folder"):
+            r["folder"] = d["gen_folder"]  # CV prêt : liens vers le CV et la lettre générés
     if status == "failed":
         return [r for r in rows if r["retryable"]]
     if status == "ecartees":

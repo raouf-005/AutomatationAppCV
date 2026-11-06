@@ -87,7 +87,7 @@ a{color:var(--accent)}
       <div class="row" style="border:0"><select id="ofilter" style="max-width:240px" onchange="loadOffers()">
         <option value="">Toutes sauf écartées (7 jours)</option><option value="applied">Postulées</option><option value="ready">À valider</option>
         <option value="failed">Échecs à réessayer</option>
-        <option value="docs_ready">CV prêts</option><option value="already">Déjà postulées avant</option>
+        <option value="docs_ready">CV prêts (postuler toi-même ou en auto)</option><option value="already">Déjà postulées avant</option>
         <option value="blocked_login">En attente de connexion</option><option value="ecartees">Écartées (non compatibles)</option><option value="error">Erreurs</option></select>
         <button onclick="location.href='/api/export.csv'" title="Toutes les candidatures dans un fichier pour Excel">Exporter (CSV)</button>
         <button onclick="retryAll()" title="Relance les candidatures qui ont échoué aujourd'hui (erreur, connexion demandée, formulaire bloquant)">Réessayer les échecs du jour</button>
@@ -266,7 +266,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
   if (b.dataset.t === 'profil') loadProfile(); if (b.dataset.t === 'fichiers') loadPaths();
   if (b.dataset.t === 'reglages') loadAllSettings();
 });
-const VERIF = {page: 'confirmation affichée', linkedin: 'confirmée par LinkedIn', email: 'accusé de réception reçu', 'à vérifier': 'à vérifier'};
+const VERIF = {manuel: 'postulée à la main', page: 'confirmation affichée', linkedin: 'confirmée par LinkedIn', email: 'accusé de réception reçu', 'à vérifier': 'à vérifier'};
 function verif(v) { if (!v) return ''; const warn = v === 'à vérifier';
   return `<span class="st ${warn ? 'error' : 'applied'}" title="${esc(VERIF[v] || v)}">${warn ? '⚠ à vérifier' : '✓ ' + esc(VERIF[v] || v)}</span>`; }
 function pdfLinks(folder) { return folder ? `<a href="/files?path=${encodeURIComponent(folder)}" target="_blank" title="${esc(folder)}">dossier</a>` : ''; }
@@ -342,6 +342,11 @@ async function checkConn() {
 }
 const STATUS = {applied: 'postulée', already: 'déjà postulée avant', docs_ready: 'CV prêt', ready: 'à valider',
   blocked_login: 'connexion requise', ignored: 'ignorée', error: 'erreur', pending_ai: "en attente de l'IA"};
+async function markApplied(key) {
+  const r = await api('/api/mark_applied', 'POST', {key});
+  $('#retrymsg').textContent = r && r.ok ? '✓ Candidature enregistrée (CV et lettre copiés dans « envoyées »)' : '✗ ' + (r ? r.error : 'échec');
+  loadOffers(); refresh();
+}
 async function retryAll() {
   const r = await api('/api/retry', 'POST', {all: true});
   retryNote(r, "Aucun échec à réessayer aujourd'hui.");
@@ -401,7 +406,10 @@ async function loadOffers() {
   $('#otable').innerHTML = rows.map(o => `<tr><td>${esc(o.company)}</td><td><a href="${esc(o.url)}" target="_blank">${esc(o.title)}</a></td>
     <td>${esc(SITES[o.site] || o.site)}</td><td><span class="st ${esc(o.status)}">${esc(STATUS[o.status] || o.status)}</span> ${verif(o.verified)}
       ${o.reponse ? `<span class="st ${o.reponse === 'refus' ? 'error' : 'applied'}">${esc(o.reponse)}</span>` : ''}</td><td class="muted">${esc((o.reason || '').slice(0, 140))}</td><td>${pdfLinks(o.folder)}</td>
-    <td>${o.retryable ? `<button onclick="retryOne('${esc(o.key)}')" title="Relancer la candidature à cette offre">Réessayer</button>` : ''}</td></tr>`).join('');
+    <td style="white-space:nowrap">${o.retryable ? `<button onclick="retryOne('${esc(o.key)}')" title="Relancer la candidature à cette offre">Réessayer</button>` : ''}
+      ${o.status === 'docs_ready' ? `<a href="${esc(o.url)}" target="_blank" title="Ouvrir l'offre pour postuler toi-même">Ouvrir l'offre</a>
+        <button onclick="markApplied('${esc(o.key)}')" title="Tu as postulé toi-même : la candidature est enregistrée">J'ai postulé</button>
+        <button onclick="retryOne('${esc(o.key)}')" title="Lancer la candidature automatique maintenant">Postuler auto</button>` : ''}</td></tr>`).join('');
 }
 const SRC_STATUS = {'active': 'surveillé', 'à vérifier': 'à vérifier (essai au prochain passage)', 'désactivée': 'désactivé',
   'en échec': 'en échec (5 erreurs de suite)', 'compte requis': 'compte requis pour postuler', 'sans résultat': 'sans résultat (mis de côté)'};
@@ -527,7 +535,11 @@ function renderAIForm() {
     h = `<p class="muted">Utilise la commande <code>claude</code> de ce PC avec ton abonnement Claude : installe Claude Code et
       connecte-toi une fois en tapant <code>claude</code> dans un terminal. Chaque appel prend quelques secondes de plus qu'avec une clé API
       et compte dans les limites de ton abonnement.</p>
-      <label class="f">Modèle (facultatif, ex. sonnet ou opus)<input type="text" id="ai_model" value="${esc(p.model)}"></label>
+      <label class="f">Modèle utilisé par Claude Code<select id="ai_model">
+        ${[['sonnet', 'Sonnet (par défaut : rapide, ménage tes limites)'], ['opus', 'Opus (meilleure qualité, limites atteintes plus vite)'],
+           ['haiku', 'Haiku (le plus rapide)'], ['défaut', 'Celui réglé dans Claude Code']]
+          .map(([v, l]) => `<option value="${v}" ${(p.model || 'sonnet') === v || (!p.model && v === 'défaut') ? 'selected' : ''}>${l}</option>`).join('')}
+      </select></label>
       <label class="f">Chemin de la commande claude (facultatif)<input type="text" id="s_claude_code_path" value="${esc(S.claude_code_path || '')}"
         placeholder="ex. C:\\Users\\toi\\.local\\bin\\claude.exe"></label>
       <button onclick="findClaudeCode()">Rechercher Claude Code sur ce PC</button>
@@ -563,7 +575,10 @@ async function saveAndTestAI() {
 async function testAI(k) {
   $('#aitest').textContent = 'Test en cours…';
   const r = await api('/api/test_ai', 'POST', {provider: k});
-  $('#aitest').textContent = r && r.ok ? `✓ ${AI.providers[k].label} répond (${r.seconds} s)` : `✗ ${r ? r.error : 'pas de réponse'}`;
+  const e = r && r.estimate;
+  $('#aitest').textContent = r && r.ok ? `✓ ${AI.providers[k].label} répond (${r.seconds} s)` +
+    (e && e.total_min ? ` — estimation : ≈ ${e.total_min} min par candidature (CV et lettre ≈ ${e.cv_s} s, formulaire ≈ ${e.formulaire_s} s ;` +
+      ` lecture ${e.lecture_tok_s} jetons/s, écriture ${e.ecriture_tok_s} jetons/s)` : '') : `✗ ${r ? r.error : 'pas de réponse'}`;
   await loadAI(); refresh();
 }
 async function saveCred() {

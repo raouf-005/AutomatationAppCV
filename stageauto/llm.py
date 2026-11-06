@@ -91,3 +91,58 @@ def translate_tex(tex: str, english_rules: str) -> str | None:
         return None
     out = re.sub(r"^```(?:latex|tex)?\s*|```\s*$", "", out.strip())
     return out if "\\begin{document}" in out else None
+
+
+# --------------------------------------------------------------------- petit modèle local (Ollama, moins de 9 milliards)
+DOMAINS = {
+    "offensif": r"pentest|red team|tests? d.intrusion|offensi|ethical hack|bug bounty|audit (technique|de s[ée]curit[ée])|vuln[ée]rabilit",
+    "grc": r"\bgrc\b|gouvernance|conformit|compliance|gestion des risques|analyse de risques|iso ?2700|rssi|pssi|nis ?2|ebios|rgpd",
+    "devops": r"devops|devsecops|ci/?cd|kubernetes|docker|terraform|ansible|\bsre\b|cloud|pipeline|automatisation|gitlab",
+    "reseau": r"r[ée]seaux?|network|routage|bgp|ospf|t[ée]l[ée]com|infrastructure|administrat(eur|ion) syst|switch|firewall|pare-feu",
+    "soc": r"\bsoc\b|siem|\bcert\b|csirt|d[ée]tection|r[ée]ponse (aux|à) incident|blue team|threat|splunk|qradar|sentinel|edr",
+}
+LOCAL_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["eligible", "reason", "lang", "e", "s", "poste", "ville", "equipe", "accroche", "pourquoi", "kw", "message_court"],
+    "properties": {"eligible": {"type": "boolean"}, "reason": S, "lang": {"type": "string", "enum": ["fr", "en"]},
+                   "e": S, "s": S, "poste": S, "ville": S, "equipe": S, "accroche": S, "pourquoi": S,
+                   "kw": {"type": "array", "items": S, "maxItems": 8}, "message_court": S},
+}
+
+
+def domain_of(offer: dict) -> str:
+    """Modèle de CV choisi sans IA : le domaine dont les mots reviennent le plus dans l'offre."""
+    t = f"{offer.get('title') or ''} {offer.get('title') or ''} {offer.get('description') or ''}".lower()
+    scores = {d: len(re.findall(rx, t)) for d, rx in DOMAINS.items()}
+    best = max(scores, key=scores.get)
+    return best if scores[best] else "soc"
+
+
+def tailor_local(offer: dict) -> dict | None:
+    """Adaptation pour un petit modèle local : consignes courtes, offre résumée, peu de champs, réponse en JSON imposé.
+    Les puces et compétences du modèle de CV restent celles du profil (rien n'est réécrit par le modèle) ; les mots-clés
+    proposés ne sont gardés que s'ils figurent déjà dans le profil (aucune compétence inventée)."""
+    profil = (SKILL_DIR / "references" / "profil.md").read_text(encoding="utf-8")
+    facts = (f"{PROFILE.get('nom_complet')}, {PROFILE.get('formation')} ({PROFILE.get('ecole')}), stage de fin d'études de "
+             f"{PROFILE.get('duree', '6 mois')} dès {PROFILE.get('disponibilite')}, {PROFILE.get('mobilite')}. Domaines : "
+             f"{PROFILE.get('domaines_vises', 'cybersécurité, réseaux, DevOps')}.")
+    sysmsg = ("Tu prépares la candidature d'un étudiant à UNE offre de stage. Réponds en JSON uniquement. Règles : n'invente "
+              "rien, cite seulement les faits du profil ; eligible = faux si alternance, CDI, stage de moins de 6 mois, "
+              "habilitation ou nationalité française exigée, poste hors de France ou hors cybersécurité / réseaux / "
+              "systèmes / DevOps / cloud. e = entreprise, s = sujet court (2-4 mots), poste = intitulé court sans H/F, "
+              "accroche = 1 phrase (250 caractères max), pourquoi = 2 phrases sur l'entreprise et la mission (400 "
+              "caractères max), kw = mots-clés de l'offre que le profil possède VRAIMENT, message_court < 300 caractères. "
+              f"Écris dans la langue du champ lang.\nPROFIL : {facts}")
+    user = (f"Entreprise : {offer.get('company')}\nIntitulé : {offer.get('title')}\nLieu : {offer.get('location')}\n\n"
+            f"Offre (extrait) :\n{(offer.get('description') or '')[:3500]}"
+            + (("\n\n" + rules.prompt_block(offer)) if rules.prompt_block(offer) else ""))
+    d = providers.JsonConversation(sysmsg, LOCAL_SCHEMA, max_tokens=1200, effort="low", name="adaptation locale").ask(user)
+    if not d:
+        return None
+    low = profil.lower()
+    d["kw"] = [k for k in d.get("kw") or [] if k and k.lower() in low and k not in BANNED_TOOLS][:6]
+    lang, _ = rules.cv_lang(offer)
+    d.update(lang=lang or d.get("lang", "fr"), dom=domain_of(offer), domaine=d.get("s", ""), puces=[], skills=[], savoir="",
+             preuve="", recruteur="", accroche=(d.get("accroche") or "")[:300], pourquoi=(d.get("pourquoi") or "")[:450],
+             e=d.get("e") or offer.get("company") or "Entreprise", s=d.get("s") or "Stage")
+    return d
