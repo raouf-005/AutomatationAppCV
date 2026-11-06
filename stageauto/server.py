@@ -165,7 +165,7 @@ async def state():
                     "found_today": sum(r["new"] for r in db.coverage_today()
                                        if r["source"] not in SITES and r["source"] != "alertes e-mail")},
         "total_applied": db.q("SELECT COUNT(*) n FROM offers WHERE status='applied'")[0]["n"],
-        "failed_today": len(pipeline.failed_offers(1)), "retry_waiting": len(RETRY), "hot_replies": hot_replies(),
+        "failed_today": len(pipeline.failed_offers(1)), "failed_list": pipeline.failed_offers(1)[:15], "retry_waiting": len(RETRY), "hot_replies": hot_replies(),
     }
 
 
@@ -219,15 +219,23 @@ async def offers(status: str = "", days: int = 7):
     since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
     sql = "SELECT key, site, company, title, url, status, reason, folder, found_at, applied_at, data FROM offers WHERE found_at >= ?"
     args = [since]
-    if status and status != "failed":
+    if status and status not in ("failed", "ecartees"):
         sql += " AND status=?"
         args.append(status)
+    elif status == "ecartees":
+        sql += " AND status='ignored'"
     rows = db.q(sql + " ORDER BY COALESCE(applied_at, found_at) DESC LIMIT 400", args)
     for r in rows:
         d = json.loads(r.pop("data") or "{}")
         r["verified"], r["score"], r["reponse"] = d.get("verified", ""), d.get("score"), d.get("reponse", "")
         r["retryable"] = pipeline.is_failed(r["status"], r["reason"], d)
-    return [r for r in rows if r["retryable"]] if status == "failed" else rows
+    if status == "failed":
+        return [r for r in rows if r["retryable"]]
+    if status == "ecartees":
+        return [r for r in rows if not r["retryable"]]
+    if not status:  # liste par défaut : sans les offres non compatibles (non éligibles, pré-tri, hors domaine, anciennes)
+        return [r for r in rows if r["status"] != "ignored" or r["retryable"]]
+    return rows
 
 
 @app.get("/api/contacts")

@@ -11,6 +11,7 @@
  "tel_sans_indicatif": "",
  "indicatif": "",
  "ville": "Paris",
+ "code_postal": "",
  "ville_longue": "Paris, Île-de-France, France",
  "region": "",
  "pays": "France",

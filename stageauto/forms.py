@@ -102,7 +102,7 @@ def rule_answer(label: str, f: dict, ctx: dict):
         (r"linkedin", [P["linkedin"]]),
         (r"github", [P["github"]]),
         (r"site web|website|portfolio|url", [P["linkedin"]]),
-        (r"code postal|postal|zip", None),
+        (r"code postal|postal|zip|cp\b", [P["code_postal"]] if P.get("code_postal") else None),
         (r"ville|city|localit|lieu de r[ée]sidence|adresse|address|location|localisation|o[uù] habitez", [P["ville_longue"], P["ville"]]),
         (r"r[ée]gion|zone de recherche", [ctx.get("region") or P["region"], "Île-de-France"]),
         (r"pays|country", [P["pays"]]),

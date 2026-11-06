@@ -87,7 +87,9 @@ DEFAULT_SETTINGS = {
     "dashboard_window": False,        # tableau de bord dans une fenêtre à part (sinon : un onglet de ton Chrome)
     "single_window": True,            # une seule fenêtre Chrome StageAuto (LinkedIn et autres sites en onglets)
     "dedicated_chrome_fallback": False,  # jamais de second Chrome (Playwright) si l'extension manque : on attend ton Chrome
-    "local_backup": True,             # Ollama / LM Studio sur ce PC : dernier recours si toutes les autres IA échouent
+    "local_backup": True,
+    "local_ctx": 16384,               # Ollama : taille du contexte (jetons) ; plus grand = consignes complètes, plus de mémoire
+    "ollama_native": True,            # Ollama par son API native (contexte long, JSON contraint), plus fiable             # Ollama / LM Studio sur ce PC : dernier recours si toutes les autres IA échouent
     "rule_only_today": True,          # règles (onglet Règles) : offres publiées aujourd'hui seulement
     "rule_linkedin_first": True,      # LinkedIn d'abord
     "rule_cv_lang": True,             # CV en anglais si l'offre le demande (ou est en anglais), sinon en français
@@ -106,10 +108,10 @@ DEFAULT_SETTINGS = {
     "max_applications_per_pass": 40,
     "max_invites_per_day": 20,
     "max_inmails_per_day": 5,
-    "linkedin_searches": [
-        "stage cybersécurité", "stage DevOps OR DevSecOps OR cloud OR réseau OR SOC OR pentest OR GRC"],
-    "keywords": ["stage cybersécurité", "stage SOC", "stage pentest", "stage DevOps", "stage DevSecOps",
-                 "stage réseau sécurité", "stage GRC", "stage cloud infrastructure", "stage administrateur systèmes"],
+    "linkedin_searches": ["stage réseau informatique", "stage cybersécurité"],  # mot-clé seul + « moins de 24 h »
+    "keywords": ["stage cybersécurité", "stage réseau informatique", "stage SOC", "stage pentest", "stage DevOps",
+                 "stage DevSecOps", "stage réseau sécurité", "stage GRC", "stage cloud infrastructure",
+                 "stage administrateur systèmes"],
     "jobteaser_base": "https://www.jobteaser.com",
     "smartrecruiters_companies": ["Wavestone1", "SopraSteria1", "Capgemini", "Ubisoft2", "Equativ", "Sanofi"],
     "teamtailor_hosts": ["careers.almond.eu", "recrutement.volkswagengroup.fr"],

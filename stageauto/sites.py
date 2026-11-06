@@ -194,18 +194,19 @@ class LinkedIn(SiteDef):
 
     async def search(self, browser, since_hours, quick=False):
         s = load_settings()
-        qs = s.get("linkedin_searches") or ["stage cybersécurité"]
-        tpr = f"r{int(max(3600, since_hours * 3600))}"
-        urls = [f"https://www.linkedin.com/jobs/search/?keywords={quote(qs[0])}&location=France&f_E=1&f_TPR={tpr}&sortBy=DD&f_AL=true",
-                f"https://www.linkedin.com/jobs/search/?keywords={quote(qs[-1])}&location=France&f_E=1&f_TPR={tpr}&sortBy=DD"]
-        if quick:
-            urls = urls[:1]  # veille : une seule recherche, les plus récentes en candidature simplifiée
-        else:
-            urls.insert(1, urls[0] + "&start=25")  # passage complet : 2e page de la recherche principale
+        qs = [q for q in (s.get("linkedin_searches") or []) if q.strip()][:3] or ["stage réseau informatique", "stage cybersécurité"]
+        # comme à la main : le mot-clé et « moins de 24 heures » (r86400), plus récentes d'abord ; pas de filtre
+        # « niveau stage » ni « candidature simplifiée », qui écartaient des offres de stage mal classées
+        base = [f"https://www.linkedin.com/jobs/search/?keywords={quote(q)}&location=France&f_TPR=r86400&sortBy=DD" for q in qs]
+        urls = []
+        for u in base:
+            urls.append(u)
+            if not quick:
+                urls.append(u + "&start=25")  # passage complet : 2e page de chaque recherche
         found = {}
         tab = await browser.new_tab()
         try:
-            for url in urls:  # 2 recherches au plus par passage
+            for url in urls:  # 3 recherches au plus (2 pages en passage complet)
                 await tab.goto(url)
                 await tab.wait_for("() => document.querySelectorAll('[data-job-id], [data-occludable-job-id]').length"
                                    " || /login|authwall|\\/uas\\/|checkpoint/.test(location.href)", timeout=8)

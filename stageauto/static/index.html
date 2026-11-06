@@ -85,10 +85,10 @@ a{color:var(--accent)}
     </nav>
     <div data-p="offres">
       <div class="row" style="border:0"><select id="ofilter" style="max-width:240px" onchange="loadOffers()">
-        <option value="">Toutes (7 jours)</option><option value="applied">Postulées</option><option value="ready">À valider</option>
+        <option value="">Toutes sauf écartées (7 jours)</option><option value="applied">Postulées</option><option value="ready">À valider</option>
         <option value="failed">Échecs à réessayer</option>
         <option value="docs_ready">CV prêts</option><option value="already">Déjà postulées avant</option>
-        <option value="blocked_login">En attente de connexion</option><option value="ignored">Ignorées</option><option value="error">Erreurs</option></select>
+        <option value="blocked_login">En attente de connexion</option><option value="ecartees">Écartées (non compatibles)</option><option value="error">Erreurs</option></select>
         <button onclick="location.href='/api/export.csv'" title="Toutes les candidatures dans un fichier pour Excel">Exporter (CSV)</button>
         <button onclick="retryAll()" title="Relance les candidatures qui ont échoué aujourd'hui (erreur, connexion demandée, formulaire bloquant)">Réessayer les échecs du jour</button>
         <span class="muted" id="retrymsg"></span></div>
@@ -227,7 +227,7 @@ a{color:var(--accent)}
         <div>
           <h2>Recherche</h2>
           <label class="f">Mots-clés (un par ligne)<textarea id="s_keywords"></textarea></label>
-          <label class="f">Recherches LinkedIn (2 au plus)<textarea id="s_linkedin_searches"></textarea></label>
+          <label class="f">Recherches LinkedIn (3 au plus : mot-clé seul, offres de moins de 24 h)<textarea id="s_linkedin_searches"></textarea></label>
           <label class="f">Entreprises SmartRecruiters (identifiants, un par ligne)<textarea id="s_smartrecruiters_companies"></textarea></label>
           <label class="f">Adresse JobTeaser (espace école)<input type="text" id="s_jobteaser_base"></label>
           <label class="f">Certificats à joindre (PDF)<input type="text" id="s_certificats_pdf"></label>
@@ -309,7 +309,10 @@ async function refresh() {
       ${r.link ? ` <a href="${esc(r.link)}" target="_blank">Choisir un créneau</a>` : ''}</div>`).join('');
   $('#failedbox').innerHTML = d.failed_today ? `<div class="row" style="border:0"><span class="grow"><b>${d.failed_today}</b>
       candidature(s) échouée(s) aujourd'hui (erreur, connexion demandée, formulaire bloquant)${d.retry_waiting ? ` · réessai en attente de la fin du passage` : ''}</span>
-      <button class="primary" onclick="retryAll()">Réessayer les échecs</button></div>` : '';
+      <button class="primary" onclick="retryAll()">Réessayer tous les échecs</button></div>` +
+      (d.failed_list || []).map(f => `<div class="row"><span class="grow">${esc(f.company)} — ${esc(f.title)}
+      <br><span class="muted" style="font-size:12px">${esc(STATUS[f.status] || f.status)} : ${esc((f.reason || '').slice(0, 110))}</span></span>
+      <button onclick="retryOne('${esc(f.key)}')">Réessayer</button></div>`).join('') : '';
   $('#applied').innerHTML = (d.applied_today || []).map(o => `<div class="row"><span class="grow"><b>${esc(o.company)}</b> — ${esc(o.title)}
      <span class="muted">${o.delay_min != null ? `· ${o.delay_min} min après détection` : ''}</span></span>${verif(o.verified)}
      <a href="${esc(o.url)}" target="_blank">offre</a> ${pdfLinks(o.folder)}</div>`).join('') || '<span class="muted">Aucune candidature aujourd\'hui.</span>';

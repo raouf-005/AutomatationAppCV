@@ -598,6 +598,12 @@ RETIRED_BOARDS = ["board:free-work"]
 def setup():
     """Au démarrage : site « Sites carrières » activé, autres sites d'emploi proposés (une seule fois)."""
     s = load_settings()
+    if s.get("linkedin_searches") == ["stage cybersécurité", "stage DevOps OR DevSecOps OR cloud OR réseau OR SOC OR pentest OR GRC"]:
+        s["linkedin_searches"] = ["stage réseau informatique", "stage cybersécurité"]
+        save_settings(s)
+    if "stage réseau informatique" not in (s.get("keywords") or []) and s.get("keywords"):
+        s["keywords"] = s["keywords"][:1] + ["stage réseau informatique"] + s["keywords"][1:]
+        save_settings(s)
     en = s.get("sites_enabled") or {}
     if "carrieres" not in en:
         en["carrieres"] = True

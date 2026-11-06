@@ -521,7 +521,65 @@ def _loads(txt: str):
 
 
 # ---------------------------------------------------------------------- services compatibles OpenAI
+def _ollama_msgs(msgs: list) -> list:
+    """Messages au format OpenAI -> format natif d'Ollama (arguments d'outils en objet, images à part)."""
+    out = []
+    for m in msgs:
+        n = {"role": m["role"], "content": ""}
+        c = m.get("content")
+        if isinstance(c, list):
+            n["content"] = "\n".join(p.get("text", "") for p in c if p.get("type") == "text")
+            imgs = [p["image_url"]["url"].split(",", 1)[-1] for p in c if p.get("type") == "image_url"]
+            if imgs:
+                n["images"] = imgs
+        else:
+            n["content"] = c or ""
+        if m.get("tool_calls"):
+            n["tool_calls"] = []
+            for tc in m["tool_calls"]:
+                args = tc["function"].get("arguments") or "{}"
+                n["tool_calls"].append({"function": {"name": tc["function"]["name"],
+                                                     "arguments": json.loads(args) if isinstance(args, str) else args}})
+        out.append(n)
+    return out
+
+
+def ollama_chat(payload: dict) -> dict:
+    """Ollama par son API native (meilleur rendement qu'en mode compatible OpenAI) : contexte long (les consignes du
+    skill dépassent les 2 048 / 4 096 jetons par défaut, qui les tronquent sans prévenir), JSON contraint par le schéma,
+    température basse, modèle gardé en mémoire 30 min. Réponse renvoyée au format OpenAI."""
+    s = load_settings()
+    body = {"model": payload["model"], "messages": _ollama_msgs(payload.get("messages") or []), "stream": False,
+            "keep_alive": "30m",
+            "options": {"num_ctx": int(s.get("local_ctx", 16384)), "temperature": 0.2,
+                        "num_predict": int(min(payload.get("max_tokens") or 4096, s.get("foreign_max_tokens", 16000)))}}
+    rf = payload.get("response_format") or {}
+    if rf.get("type") == "json_schema":
+        body["format"] = (rf.get("json_schema") or {}).get("schema") or "json"
+    elif rf.get("type") == "json_object":
+        body["format"] = "json"
+    if payload.get("tools"):
+        body["tools"] = payload["tools"]
+    url = base_url("ollama").replace("/v1", "") + "/api/chat"
+    try:
+        r = httpx.post(url, json=body, timeout=900)
+    except httpx.HTTPError:
+        raise ProviderError(f"{label('ollama')} : service local injoignable ({url}) — Ollama est-il lancé ?")
+    if r.status_code >= 400:
+        raise ProviderError(f"{label('ollama')} {r.status_code} : {r.text[:300]}")
+    msg = r.json().get("message") or {}
+    calls = [{"id": f"call_{i}", "type": "function",
+              "function": {"name": tc["function"]["name"], "arguments": json.dumps(tc["function"].get("arguments") or {})}}
+             for i, tc in enumerate(msg.get("tool_calls") or [])]
+    m = {"role": "assistant", "content": msg.get("content") or ""}
+    if calls:
+        m["tool_calls"] = calls
+    return {"choices": [{"message": m, "finish_reason": "tool_calls" if calls else "stop"}]}
+
+
 def oa_post(payload: dict, pid: str) -> dict:
+    if pid == "ollama" and load_settings().get("ollama_native", True):
+        return ollama_chat(payload)
     key = vault.get_provider_key(pid)
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     if pid == "openrouter":

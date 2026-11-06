@@ -68,6 +68,9 @@ Application Windows qui fait, deux fois par jour, la routine de candidature de s
 
 ## Ne rater aucune offre du jour
 
+- **LinkedIn** : comme à la main, chaque recherche est le mot-clé seul (« stage réseau informatique », « stage
+  cybersécurité » ; 3 au plus, modifiables dans Réglages) avec le filtre « moins de 24 heures », plus récentes d'abord,
+  2 pages par recherche aux passages complets. Plus de filtre « niveau stage » ni « candidature simplifiée ».
 - **Tous les mots-clés** à chaque passage complet ; la veille (toutes les 30 min) en vérifie 3 qui tournent d'une veille à
   l'autre, pour que chacun soit revu plusieurs fois par jour.
 - **Pages suivantes** : les recherches triées par date et limitées à la période lisent les pages de résultats suivantes
@@ -160,6 +163,9 @@ Coché par défaut (Réglages → IA) : si toutes les autres IA échouent ou son
 Ollama prend le relais, toujours en dernier. Installe Ollama (ollama.com), puis dans un terminal `ollama pull qwen2.5:14b`
 (ou `qwen2.5:7b` si le PC a peu de mémoire). Le modèle est choisi tout seul parmi ceux installés ; aucun réglage à faire.
 Un petit modèle écrit moins bien les CV et remplit moins bien les formulaires : c'est un secours, pas un remplaçant.
+Rendement : Ollama est appelé par son API native avec un contexte de 16 384 jetons (réglage `local_ctx` ; par défaut
+Ollama coupe les longues consignes sans prévenir), un JSON contraint par le schéma (CV toujours lisible), une température
+basse et le modèle gardé en mémoire 30 min entre deux appels.
 
 ## Règles (onglet Règles)
 
@@ -171,6 +177,12 @@ Modifiables à tout moment, appliquées à chaque passage :
   English »…) ou est rédigée en anglais ; sinon en français. « Anglais courant exigé » ne suffit pas.
 - **Mes règles** : une par ligne, transmises à l'IA pour le CV, la lettre et les formulaires. Les interdits du profil
   (nationalité, habilitation, compte à créer, données sensibles) restent toujours prioritaires.
+
+## Liste des offres
+
+Par défaut, l'onglet Offres n'affiche plus les offres non compatibles (non éligibles, pré-tri, hors domaine, publiées
+avant aujourd'hui) : le filtre « Écartées » les montre quand même. Chaque échec a son bouton « Réessayer », dans la
+liste et dans la carte « Aujourd'hui ».
 
 ## Réessayer les candidatures échouées
 
