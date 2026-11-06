@@ -605,10 +605,12 @@ def setup():
         s["keywords"] = s["keywords"][:1] + ["stage réseau informatique"] + s["keywords"][1:]
         save_settings(s)
     en = s.get("sites_enabled") or {}
-    if "carrieres" not in en:
-        en["carrieres"] = True
-        s["sites_enabled"] = en
+    if not db.q("SELECT 1 FROM methods WHERE site='_sites_v2'"):
+        # plan de recherche : LinkedIn puis HelloWork ; les autres sites désactivés (réactivables dans Réglages)
+        s["sites_enabled"] = {k: k in ("linkedin", "hellowork") for k in set(en) | set(SITES) | {"carrieres"}}
         save_settings(s)
+        db.x("INSERT OR REPLACE INTO methods(site, data) VALUES('_sites_v2', '{}')")
+        log("sites actifs : LinkedIn puis HelloWork ; les autres sont désactivés (réactivables dans Réglages → Sites actifs)")
     if not db.q("SELECT 1 FROM methods WHERE site='_boards_seed_v2'"):
         for b in BOARDS:
             params = json.dumps({k: b[k] for k in ("template", "pattern", "prefix", "interns_only")}, ensure_ascii=False)
@@ -691,6 +693,7 @@ def build(src: dict, items: list, hours: float, first: bool, dry: bool = False) 
             continue
         st["nouvelles"] += not was_seen
         o = {"key": key, "site": "carrieres", "source": src["key"], "platform": src["platform"],
+             "manual_only": src.get("status") == "compte requis",
              "source_label": f"{src['company']} ({label})", "title": title,
              "company": it["company"] or src["company"] or "", "location": it["location"], "url": it["url"],
              "apply_url": it["apply_url"], "posted": ts.isoformat(timespec="minutes") if ts else "", "recent": True,
@@ -760,7 +763,7 @@ async def check(client, browser, src: dict, since_hours: float, quick: bool = Fa
 async def search(browser, since_hours: float, quick: bool = False) -> list:
     """Toutes les sources actives : plateformes à API à chaque passage (rapide), pages et autres sites d'emploi lors
     des passages complets (les moins récemment vues d'abord ; toutes au rattrapage du soir)."""
-    rows = [s for s in all_sources() if s["status"] in ("active", "à vérifier")]
+    rows = [s for s in all_sources() if s["status"] in ("active", "à vérifier", "compte requis")]
     api = [s for s in rows if s["platform"] not in ("page", "board", "smartrecruiters") and s["platform"] in PLATFORMS]
     web = sorted([s for s in rows if s["platform"] in ("page", "board")], key=lambda s: s.get("last_check") or "")
     if quick:
@@ -805,8 +808,8 @@ def note_outcome(source_key: str, status: str, reason: str):
     r = db.q("SELECT company, account_blocks FROM sources WHERE key=?", (source_key,))
     if r and r[0]["account_blocks"] >= 2:
         db.x("UPDATE sources SET status='compte requis' WHERE key=?", (source_key,))
-        log(f"source {r[0]['company']} : un compte est demandé pour postuler — mise de côté (réactivable dans Sources "
-            "une fois connecté)")
+        log(f"source {r[0]['company']} : un compte est demandé pour postuler — ses offres iront dans « À postuler "
+            "toi-même » avec CV et lettre prêts")
 
 
 # ------------------------------------------------------------------------- le « site » des sources

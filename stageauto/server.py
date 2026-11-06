@@ -165,6 +165,11 @@ async def state():
                     "found_today": sum(r["new"] for r in db.coverage_today()
                                        if r["source"] not in SITES and r["source"] != "alertes e-mail")},
         "total_applied": db.q("SELECT COUNT(*) n FROM offers WHERE status='applied'")[0]["n"],
+        "manual_list": [{"key": r["key"], "company": r["company"], "title": r["title"], "url": r["url"], "site": r["site"],
+                         "folder": json.loads(r["data"] or "{}").get("gen_folder") or r["folder"], "reason": r["reason"]}
+                        for r in db.q("SELECT key, company, title, url, site, folder, reason, data FROM offers WHERE status='manual' "
+                                      "AND found_at >= ? ORDER BY found_at DESC LIMIT 30",
+                                      ((dt.date.today() - dt.timedelta(days=2)).isoformat(),))],
         "failed_today": len(pipeline.failed_offers(1)), "failed_list": pipeline.failed_offers(1)[:15], "retry_waiting": len(RETRY), "hot_replies": hot_replies(),
     }
 

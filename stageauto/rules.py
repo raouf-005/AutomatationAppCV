@@ -1,6 +1,6 @@
 """Règles de candidature modifiables dans l'onglet « Règles » du tableau de bord.
 
-- Offres du jour seulement : publiées aujourd'hui (date de l'offre, ou « il y a 3 h », sinon trouvée aujourd'hui).
+- Offres récentes seulement : publiées dans les dernières 24 heures (comme le filtre « 24 dernières heures » de LinkedIn).
 - LinkedIn d'abord : les offres LinkedIn passent en tête pour la préparation des CV et les candidatures.
 - Langue du CV : anglais si l'offre demande un CV en anglais ou est rédigée en anglais, sinon français.
 - Règles libres : une par ligne, transmises à l'IA pour le CV, la lettre et les formulaires.
@@ -32,24 +32,21 @@ def linkedin_first() -> bool:
 
 
 def window(hours: float) -> float:
-    """Fenêtre de recherche limitée à aujourd'hui (depuis minuit, un quart d'heure de marge)."""
-    if not only_today():
-        return hours
-    now = dt.datetime.now()
-    since_midnight = (now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() / 3600
-    return max(0.5, min(hours, since_midnight + 0.25))
+    """Fenêtre de recherche : 24 heures au plus (comme le filtre « 24 dernières heures » de LinkedIn)."""
+    return min(hours, 24.25) if only_today() else hours
 
 
 def is_today(o: dict) -> bool:
-    """Offre publiée aujourd'hui ? Date fournie par le site, sinon âge lu sur la carte, sinon trouvée aujourd'hui."""
-    today = dt.date.today()
+    """Offre publiée dans les dernières 24 h ? Date fournie par le site, sinon âge lu sur la carte, sinon trouvée
+    il y a moins de 24 h. LinkedIn et HelloWork sont déjà filtrés par leur recherche (24 dernières heures)."""
+    now = dt.datetime.now()
     posted = o.get("posted")
     if posted:
         try:
             d = dt.datetime.fromisoformat(str(posted).replace("Z", "+00:00"))
             if d.tzinfo:
-                d = d.astimezone()
-            return d.date() == today
+                d = d.astimezone().replace(tzinfo=None)
+            return now - d <= dt.timedelta(hours=24.5)
         except ValueError:
             pass
     from .priority import age_minutes
@@ -57,11 +54,23 @@ def is_today(o: dict) -> bool:
     if age is None:
         age = age_minutes(" ".join(str(o.get(k) or "") for k in ("card", "meta")))
     if age is not None:
-        return dt.datetime.now() - dt.timedelta(minutes=age) >= dt.datetime.combine(today, dt.time())
-    if OLD_RE.search(" ".join(str(o.get(k) or "") for k in ("card", "meta"))):
+        return age <= 1500
+    if o.get("site") in ("linkedin", "hellowork"):
+        return True
+    if OLD_RE.search(" ".join(str(o.get(k) or "") for k in ("card", "meta"))) and \
+            not re.search(r"\bhier\b|yesterday|il y a 1 j|1 day ago", " ".join(str(o.get(k) or "") for k in ("card", "meta")), re.I):
         return False
-    found = str(o.get("found_at") or "")[:10]
-    return not found or found == today.isoformat()
+    found = str(o.get("found_at") or "")
+    try:
+        return not found or now - dt.datetime.fromisoformat(found) <= dt.timedelta(hours=24.5)
+    except ValueError:
+        return True
+
+
+def site_order(ids: list) -> list:
+    """LinkedIn d'abord, puis HelloWork, puis les autres sites actifs, dans l'ordre du réglage site_order."""
+    pref = _s().get("site_order") or ["linkedin", "hellowork"]
+    return sorted(ids, key=lambda i: pref.index(i) if i in pref else len(pref))
 
 
 def keep_today(offers: list) -> list:

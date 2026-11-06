@@ -109,7 +109,7 @@ def same_offer(c1: str, t1: str, c2: str, t2: str) -> bool:
     return len(A) >= 6 and len(B) >= 6 and inter / len(A | B) >= 0.9
 
 
-DONE = ("applied", "already", "ready", "blocked_login", "docs_ready")
+DONE = ("applied", "already", "ready", "blocked_login", "docs_ready", "manual")
 
 
 def duplicate_of(company: str, title: str, exclude_key: str = "", statuses=DONE):

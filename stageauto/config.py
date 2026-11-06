@@ -88,9 +88,10 @@ DEFAULT_SETTINGS = {
     "single_window": True,            # une seule fenêtre Chrome StageAuto (LinkedIn et autres sites en onglets)
     "dedicated_chrome_fallback": False,  # jamais de second Chrome (Playwright) si l'extension manque : on attend ton Chrome
     "local_backup": True,
+    "local_agent_steps": 14,          # modèle local : étapes au plus par formulaire, sinon offre « à postuler toi-même »
     "local_ctx": 16384,               # Ollama : taille du contexte (jetons) ; plus grand = consignes complètes, plus de mémoire
     "ollama_native": True,            # Ollama par son API native (contexte long, JSON contraint), plus fiable             # Ollama / LM Studio sur ce PC : dernier recours si toutes les autres IA échouent
-    "rule_only_today": True,          # règles (onglet Règles) : offres publiées aujourd'hui seulement
+    "rule_only_today": True,          # règles (onglet Règles) : offres des dernières 24 heures seulement
     "rule_linkedin_first": True,      # LinkedIn d'abord
     "rule_cv_lang": True,             # CV en anglais si l'offre le demande (ou est en anglais), sinon en français
     "rules_custom": "",               # règles libres, une par ligne, transmises à l'IA
@@ -115,8 +116,9 @@ DEFAULT_SETTINGS = {
     "jobteaser_base": "https://www.jobteaser.com",
     "smartrecruiters_companies": ["Wavestone1", "SopraSteria1", "Capgemini", "Ubisoft2", "Equativ", "Sanofi"],
     "teamtailor_hosts": ["careers.almond.eu", "recrutement.volkswagengroup.fr"],
-    "sites_enabled": {"linkedin": True, "jobteaser": True, "wttj": True, "indeed": True, "hellowork": True,
-                      "smartrecruiters": True, "orange": True, "carrieres": True},
+    "sites_enabled": {"linkedin": True, "hellowork": True, "jobteaser": False, "wttj": False, "indeed": False,
+                      "smartrecruiters": False, "orange": False, "carrieres": False},
+    "site_order": ["linkedin", "hellowork", "indeed", "jobteaser", "wttj", "orange", "smartrecruiters", "carrieres"],
     "parallel_tabs": 3,
     "parallel_llm": 4,
     "ntfy_topic": "",                 # notifications téléphone via ntfy.sh (facultatif)

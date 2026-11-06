@@ -211,6 +211,29 @@ def recipe_key(o, url: str) -> str:
     return f"{o['site']}|{host}" + ("|easy" if o.get("easy") else "")
 
 
+SITE_HOSTS = {"linkedin": "linkedin.com", "hellowork": "hellowork.com", "indeed": "indeed.", "jobteaser": "jobteaser.com",
+              "wttj": "welcometothejungle.com", "orange": "orange.jobs", "smartrecruiters": "smartrecruiters.com"}
+
+
+def manual_needed(o: dict, res: dict) -> bool:
+    """Connexion ou compte demandé ailleurs que sur le site de recherche (site de l'entreprise, Workday…) : l'offre va
+    dans « À postuler toi-même » avec son CV et sa lettre. Une session expirée sur LinkedIn ou HelloWork reste un
+    « en attente de connexion » réessayé tout seul."""
+    st, why = res.get("status"), res.get("reason") or ""
+    if not o.get("cv"):
+        return False
+    if res.get("provider") in providers.LOCAL and st in ("blocked", "error") and not re.search(
+            r"habilitation|nationalit|titre de s[ée]jour|casier|vid[ée]o|captcha", why, re.I):
+        return True  # petit modèle local dépassé par le formulaire : CV et lettre prêts, à envoyer toi-même
+    if st not in ("needs_login", "blocked"):
+        return False
+    if st == "blocked" and not sources.ACCOUNT_RE.search(why):
+        return False
+    url = (res.get("final_url") or "").lower()
+    own = SITE_HOSTS.get(o.get("site", ""))
+    return bool(o.get("manual_only")) or not own or (bool(url) and own not in url)
+
+
 def key_from_seq(url: str) -> str:
     """Page de candidature orange.jobs (apply?jobSeqNo=…) : retrouve l'offre orange.jobs connue par ce numéro."""
     m = re.search(r"orange\.jobs/.*?[?&]jobSeqNo=([A-Za-z0-9]+)", url or "")
@@ -228,6 +251,9 @@ async def apply_one(browser, o, lane=1):
     s = load_settings()
     auto = s.get("auto_submit", True)
     try:
+        if o.get("manual_only"):  # site carrière qui demande un compte : pas d'agent, CV et lettre prêts pour toi
+            return {"status": "needs_login", "reason": "compte demandé sur ce site", "final_url": o.get("url", ""),
+                    "seconds": 0, "steps": 0}
         extra = await site.start(tab, o)
         url_now = await tab.url()
         rkey = recipe_key(o, url_now)
@@ -274,6 +300,10 @@ async def apply_one(browser, o, lane=1):
         else:
             res["steps"] = 0
         res["seconds"] = round((dt.datetime.now() - t0).total_seconds())
+        try:
+            res["final_url"] = await tab.url()
+        except Exception:
+            res["final_url"] = ""
         db.record_apply(o["site"], rkey, mode, res["seconds"], res.get("steps", 0), res["status"], res.get("provider", ""))
         if mode.startswith("replay"):  # fiabilité de la méthode mémorisée
             m = db.method(rkey)
@@ -441,6 +471,10 @@ async def apply_and_record(browser, o, summary, lane=1):
         log(f"{o['company']} — {o['title'][:50]} : {res.get('reason', 'IA en pause')[:120]} (reprise au passage suivant)")
     elif st == "already_applied":  # postulé avant (autre site, à la main) : pas une candidature d'aujourd'hui
         db.set_status(o["key"], "already", ("déjà postulé : " + res.get("reason", ""))[:300])
+    elif manual_needed(o, res):
+        db.set_status(o["key"], "manual", ("connexion demandée : " + (res.get("reason") or ""))[:300])
+        summary.setdefault("manual", []).append(o)
+        log(f"à postuler toi-même : {o['company']} — {o['title'][:60]} (connexion demandée ; CV et lettre prêts)")
     elif st == "needs_login":
         db.set_status(o["key"], "blocked_login", res.get("reason", ""))
         if o["site"] not in STATE["needs_login"]:
@@ -480,7 +514,7 @@ REJECT_RE = re.compile(r"^(non éligible|pré-tri|règle|hors domaine|descriptif
 
 def is_failed(status: str, reason: str, data: dict) -> bool:
     """Candidature tentée qui n'a pas abouti (erreur, connexion demandée, formulaire bloquant), pas une offre écartée."""
-    if status in ("applied", "already", "ready", "docs_ready", "pending_ai"):
+    if status in ("applied", "already", "ready", "docs_ready", "pending_ai", "manual"):
         return False
     if data.get("apply_failed"):
         return True
@@ -494,7 +528,7 @@ def failed_offers(days: int = 1) -> list:
     since = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
     out = []
     for r in db.q("SELECT key, site, company, title, url, status, reason, data FROM offers WHERE found_at >= ? "
-                  "AND status NOT IN ('applied','already','docs_ready','pending_ai','ready')", (since,)):
+                  "AND status NOT IN ('applied','already','docs_ready','pending_ai','ready','manual')", (since,)):
         d = json.loads(r.pop("data") or "{}")
         if is_failed(r["status"], r["reason"], d):
             out.append(r)
@@ -683,14 +717,31 @@ async def run_pass(trigger="manuel", mode="full"):
         ok_ids = [k for k, ok in conn.items() if ok is not False]  # « pas sûr » : essayé quand même
         if quick and "linkedin" in ok_ids and not linkedin_due():
             ok_ids.remove("linkedin")  # LinkedIn : une recherche par heure au plus en veille
-        phase("recherche", f"offres des {hours:.1f} dernières heures ({', '.join(ok_ids)})")
-        offers = select_new(await find_offers(browser, ok_ids, hours, quick))
-        keys = {o["key"] for o in offers}
-        offers += rules.keep_today([o for o in db.pending_ai_offers() if o["key"] not in keys and o.get("site") in SITES])
-        offers = rules.order(offers)
+        # site après site, dans l'ordre (LinkedIn, puis HelloWork, puis les autres) : recherche puis candidatures du site
         resume = rules.order(rules.keep_today(pending_ready()))
-        phase("candidatures", f"{len(offers)} nouvelles offres, {len(resume)} CV prêts en attente")
-        await stream(browser, offers, summary, resume)
+        pend = rules.keep_today([o for o in db.pending_ai_offers() if o.get("site") in SITES])
+        first = True
+        for sid in rules.site_order(ok_ids):
+            if STATE["stop"]:
+                break
+            phase("recherche", f"{SITES[sid].name} : offres des {hours:.1f} dernières heures")
+            offers = select_new(await gather_offers(browser, [sid], hours, quick))
+            if first:
+                keys = {o["key"] for o in offers}
+                offers = rules.order(offers + [o for o in pend if o["key"] not in keys])
+            phase("candidatures", f"{SITES[sid].name} : {len(offers)} nouvelles offres"
+                  + (f", {len(resume)} CV prêts en attente" if first and resume else ""))
+            await stream(browser, offers, summary, resume if first else ())
+            first = False
+        if load_settings().get("gmail_alerts", True) and gmail_due(quick) and not STATE["stop"]:
+            phase("alertes e-mail", "offres reçues par les alertes des sites")
+            try:
+                got = await gmail.alerts(browser)
+                db.coverage_add("alertes e-mail", listed=len(got))
+                got = [o for o in got if o.get("site") in ok_ids or o.get("site") == "carrieres"]
+                await stream(browser, select_new(got), summary)
+            except Exception as e:
+                log(f"alertes e-mail : {e.__class__.__name__} {str(e)[:100]}")
         if summary["applied"]:
             phase("vérification", "confirmation des candidatures")
             await verify_applications(browser, summary["applied"])
@@ -743,6 +794,9 @@ async def run_pass(trigger="manuel", mode="full"):
         STATE["running"] = False
         STATE["ended"] = db.now()
         STATE["lanes"] = {}
+        if summary.get("manual"):
+            push(f"{len(summary['manual'])} offre(s) à postuler toi-même",
+                 "Connexion demandée sur le site de l'entreprise : CV et lettre prêts dans le tableau de bord (carte Aujourd'hui).")
         text = recap(summary)
         STATE["summary"] = text
         if summary.get("no_browser"):  # rien n'a été cherché : ce passage ne doit pas raccourcir la période suivante

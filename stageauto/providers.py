@@ -89,7 +89,10 @@ def model_of(pid) -> str:
 LOCAL = ("ollama", "lmstudio")
 _OLLAMA = {"t": 0.0, "models": []}
 # modèles capables de JSON et d'outils, du plus adapté au moins adapté (le plus gros d'une même famille d'abord)
-_OLLAMA_PREF = ("qwen3", "qwen2.5", "llama3.3", "llama3.1", "mistral-small", "mistral-nemo", "gemma3", "mistral", "llama3", "phi4")
+# « stageauto » : modèle réglé pour l'application (ollama/Modelfile, créé par installer_modele_local.bat) ; puis les
+# familles qui suivent le mieux un JSON et des outils, y compris en petite taille (4 milliards de paramètres)
+_OLLAMA_PREF = ("stageauto", "qwen3", "qwen2.5", "gemma3", "llama3.3", "llama3.1", "llama3.2", "mistral-small", "mistral-nemo",
+                "phi4-mini", "phi4", "mistral", "llama3")
 
 
 def ollama_models() -> list:
@@ -564,6 +567,8 @@ def ollama_chat(payload: dict) -> dict:
         body["format"] = "json"
     if payload.get("tools"):
         body["tools"] = payload["tools"]
+    if re.search(r"qwen3|deepseek-r1|stageauto|magistral", payload["model"] or "", re.I):
+        body["think"] = False  # modèle « à réflexion » : réponse directe, plus rapide et JSON propre
     url = base_url("ollama").replace("/v1", "") + "/api/chat"
     try:
         r = httpx.post(url, json=body, timeout=900)

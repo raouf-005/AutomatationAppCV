@@ -375,6 +375,9 @@ class Agent:
     async def run(self, goal: str, max_steps: int | None = None) -> dict:
         s = load_settings()
         max_steps = max_steps or s.get("agent_max_steps", 40)
+        order = providers.providers_in_order()
+        if order and order[0] in providers.LOCAL:  # petit modèle local : peu d'étapes, sinon l'offre est rendue à la main
+            max_steps = min(max_steps, int(s.get("local_agent_steps", 14)))
         notes = db.method(self.site).get("notes", [])
         hint = SITE_HINTS.get(self.site, "")
         recipe = db.method(self.recipe_key).get("recipe") if self.recipe_key else None

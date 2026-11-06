@@ -108,6 +108,16 @@ def summary(errs: str, n: int = 220) -> str:
     return (" | ".join(lines[:3]))[:n] or "erreur inconnue"
 
 
+BLOCKING = re.compile(r"terme interdit|telephone|disponibilite|en cours|\d+ pages|erreur LaTeX|pdflatex|police non embarquee|"
+                      r"image raster|aucun CV_", re.I)
+
+
+def _blocking(errs: str) -> bool:
+    """Erreur qui touche la vérité ou la règle du skill (terme interdit, téléphone, page en trop, LaTeX) : à corriger par
+    l'IA. Les autres (lecture ATS, mise en forme) laissent un CV juste : gardé avec avertissement, sans tout régénérer."""
+    return bool(BLOCKING.search(errs or ""))
+
+
 def _latex_only(errs: str) -> bool:
     """build.py n'a échoué qu'à la compilation (aucune règle du skill en cause) : souvent l'installation LaTeX."""
     lines = [l for l in (errs or "").splitlines() if l.strip()]
@@ -243,6 +253,9 @@ def generate(offer: dict) -> dict:
         if ok:
             break
         log(f"build {dossier} : {summary(errs)} (tentative {attempt + 1})")
+        if attempt == 0 and not _blocking(errs):
+            warnings.append("contrôles ATS non parfaits (pas de correction, économie de jetons) : " + summary(errs, 200))
+            break
         if attempt == 0:
             try:
                 d2 = conv.ask("build.py signale ces erreurs. Corrige-les en une fois et renvoie l'objet complet "

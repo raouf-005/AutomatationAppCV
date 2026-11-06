@@ -46,6 +46,35 @@ Application Windows qui fait, deux fois par jour, la routine de candidature de s
   Tu valides ensuite chaque candidature d'un clic dans le tableau de bord.
 - Les PDF envoyés sont copiés dans `Downloads\Candidatures\envoyees\<Entreprise_Sujet>\`.
 
+## Plan de chaque passage : LinkedIn, puis HelloWork, puis les contacts
+
+1. **LinkedIn** : onglet Emplois, recherche « stage réseau informatique » puis « stage cybersécurité » (modifiables), menu
+   « Date de publication » → **24 dernières heures**. L'application postule à **toutes** les offres affichées dans cette
+   liste, pas seulement la candidature simplifiée : une offre qui renvoie vers le site de l'entreprise est suivie
+   jusqu'au formulaire.
+2. **HelloWork** ensuite, avec la même stratégie : offres publiées dans les dernières 24 heures.
+3. **Contacts** : une fois les candidatures finies, recherche des managers et recruteurs des entreprises sur LinkedIn,
+   invitations (20 par jour au plus) et relances.
+
+Les **autres sites** (Indeed, JobTeaser, Welcome to the Jungle, Orange, SmartRecruiters, sites carrières) sont
+**désactivés par défaut** : réactive ceux que tu veux dans Réglages → Sites actifs. Ils passent alors après HelloWork
+(ordre réglable par `site_order`).
+
+**À postuler toi-même (connexion demandée)** : quand le site de l'entreprise exige de se connecter ou de créer un compte
+(Workday de Thales, portail Taleo…), l'application ne crée jamais de compte et ne tape jamais de mot de passe. L'offre
+apparaît dans la carte « Aujourd'hui », section **À postuler toi-même**, avec le CV et la lettre déjà prêts : « Ouvrir
+l'offre », les PDF, puis « J'ai postulé ». Une notification annonce combien il y en a à la fin du passage. Si c'est la
+session LinkedIn ou HelloWork elle-même qui a expiré, l'offre est simplement réessayée après reconnexion.
+
+**Pourquoi Wavestone et Thales ont pu être ratés** : l'ancienne recherche LinkedIn ne gardait que la candidature
+simplifiée (corrigé), les sites qui demandent un compte étaient ignorés au lieu d'être listés pour toi (corrigé : liste
+« À postuler toi-même »), au plus 3 offres par entreprise et par jour, et une offre qui exige une habilitation (fréquent
+chez Thales) est écartée par tes règles.
+
+**Moins de jetons** : une candidature déjà réussie sur un site est rejouée sans IA (mémoire des sites) ; le pré-tri écarte
+les offres incompatibles sans IA ; le CV n'est renvoyé à l'IA pour correction que si un contrôle est bloquant (terme
+interdit, coordonnées, plus d'une page, erreur LaTeX) : un mot-clé ATS mal placé ne déclenche plus un second appel.
+
 ## Postuler vite et parmi les premiers
 
 - **Priorité** : chaque offre reçoit une note. Elle monte avec la récence (« il y a 12 minutes »), avec les signaux
@@ -157,27 +186,28 @@ la réponse reçue, dans un fichier pour Excel.
 - **Réglages → Tous les paramètres** : chaque réglage de l'application en texte (JSON), y compris ceux sans case ;
   une erreur de format est signalée sans rien changer.
 
-## Modèle local en dernier recours (Ollama)
+## Modèle local en dernier recours (Ollama, 4 milliards de paramètres)
 
-Coché par défaut (Réglages → IA) : si toutes les autres IA échouent ou sont en pause (limite atteinte), un modèle local
-Ollama prend le relais, toujours en dernier. Installe Ollama (ollama.com), puis dans un terminal `ollama pull qwen2.5:14b`
-(ou `qwen2.5:7b` si le PC a peu de mémoire). Le modèle est choisi tout seul parmi ceux installés ; aucun réglage à faire.
-Un petit modèle écrit moins bien les CV et remplit moins bien les formulaires : c'est un secours, pas un remplaçant.
-Petit modèle (moins de 9 milliards de paramètres, ex. `qwen2.5:7b`, `llama3.1:8b`) : quand le modèle local est l'IA
-utilisée, les CV et lettres passent par un mode dédié : le modèle de CV du domaine est choisi sans IA, le modèle ne
-reçoit que des consignes courtes (environ 2 000 caractères au lieu de 40 000) et l'offre résumée, il écrit seulement
-l'accroche, le « pourquoi vous » et le message ; les puces restent celles de ton profil et un mot-clé qu'il proposerait
-sans que tu l'aies (ou un outil interdit) est écarté. Après « Enregistrer et tester l'IA », une **estimation** s'affiche :
-temps par candidature (CV et lettre, formulaire) calculé à partir des vitesses mesurées du modèle.
-Rendement : Ollama est appelé par son API native avec un contexte de 16 384 jetons (réglage `local_ctx` ; par défaut
-Ollama coupe les longues consignes sans prévenir), un JSON contraint par le schéma (CV toujours lisible), une température
-basse et le modèle gardé en mémoire 30 min entre deux appels.
+Coché par défaut (Réglages → IA) : quand il n'y a plus de jetons (limites atteintes, pas de clé), un modèle local Ollama
+prend le relais, toujours en dernier. **Installation en un double-clic : `installer_modele_local.bat`**. Il installe
+Ollama si besoin, télécharge `qwen3:4b` (environ 2,5 Go ; à défaut `qwen2.5:3b`) et crée le modèle **`stageauto`**,
+réglé pour StageAuto par `ollama/Modelfile` : température basse, contexte de 16 384 jetons, consignes fixes (ne rien
+inventer, répondre en JSON, s'arrêter sur une donnée sensible). L'application choisit `stageauto` en premier ; pour le
+régler autrement, modifie `ollama/Modelfile` puis relance le .bat. C'est un réglage du modèle, pas un réentraînement.
+
+Avec ce petit modèle, tout est allégé : les CV et lettres passent par un mode dédié (modèle de CV du domaine choisi sans
+IA, consignes d'environ 2 000 caractères au lieu de 40 000, le modèle écrit seulement l'accroche, le « pourquoi vous » et
+le message ; les puces restent celles de ton profil, un mot-clé inventé ou un outil interdit est écarté). Pour les
+formulaires, l'agent local a 14 étapes au plus (`local_agent_steps`), le « raisonnement » de qwen3 est coupé pour aller
+vite, et une candidature qu'il n'arrive pas à finir passe dans « À postuler toi-même » avec le CV et la lettre prêts.
+Après « Enregistrer et tester l'IA », une **estimation** s'affiche : temps par candidature (CV et lettre, formulaire).
+Ollama est appelé par son API native (contexte `local_ctx`, JSON contraint par un schéma, modèle gardé en mémoire 30 min).
 
 ## Règles (onglet Règles)
 
 Modifiables à tout moment, appliquées à chaque passage :
-- **Offres du jour seulement** (activé) : recherche limitée à depuis minuit ; une offre d'hier ou plus ancienne (date du
-  site, « il y a 3 jours », « publiée hier ») est écartée avec la raison « règle : offre publiée avant aujourd'hui ».
+- **Offres des dernières 24 heures** (activé) : comme le filtre « 24 dernières heures » de LinkedIn ; une offre plus
+  ancienne (date du site, « il y a 3 jours ») est écartée avec la raison « règle : offre publiée avant aujourd'hui ».
 - **LinkedIn d'abord** (activé) : les offres LinkedIn passent en tête pour la préparation des CV et les candidatures.
 - **Langue du CV** (activé) : CV et lettre en anglais si l'offre demande un CV en anglais (« CV en anglais », « resume in
   English »…) ou est rédigée en anglais ; sinon en français. « Anglais courant exigé » ne suffit pas.
@@ -385,6 +415,7 @@ stageauto/
 personal/             NON PUBLIÉ (.gitignore) : profile.json, skill/candidature-stage-ciblee, tpl/, seed/
 personal.example/     structure attendue du dossier personnel
 tests/                test hors ligne (formulaire local, agent simulé)
+ollama/Modelfile      réglages du modèle local « stageauto » (qwen3:4b), installé par installer_modele_local.bat
 install.bat, StageAuto.bat (lancement discret), StageAuto_debug.bat (avec console), requirements.txt
 ```
 
