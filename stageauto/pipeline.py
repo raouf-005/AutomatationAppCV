@@ -644,6 +644,20 @@ def track_replies(g: dict) -> int:
         tag = "reply:" + hashlib.sha1(f"{ev['from']}|{ev['subject']}".encode()).hexdigest()[:16]
         if not db.once(tag):
             continue
+        # même entretien en plusieurs e-mails (invitation, puis « mise à jour ») : une seule ligne, mise à jour
+        thread = ev.get("thread") or ""
+        if ev["kind"] == "entretien" and thread:
+            old = next((r for r in db.q("SELECT id, note FROM pending WHERE kind='reply' AND site='entretien' ORDER BY id DESC LIMIT 60")
+                        if json.loads(r["note"] or "{}").get("thread") == thread), None)
+            if old:
+                prev = json.loads(old["note"] or "{}")
+                db.x("UPDATE pending SET note=?, created=? WHERE id=?",
+                     (json.dumps({**prev, **ev, "company": prev.get("company", ""), "title": prev.get("title", "")},
+                                 ensure_ascii=False), db.now(), old["id"]))
+                if ev.get("when") and ev["when"] != prev.get("when"):
+                    push(f"Entretien déplacé : {prev.get('company') or ev['who']}", f"nouvelle date : {ev['when']} — {ev['subject'][:100]}")
+                n += 1
+                continue
         hay = nrm(f"{ev['who']} {ev['from']} {ev['subject']} {ev['snippet']}")
         hit = None
         for r in rows:
@@ -662,7 +676,7 @@ def track_replies(g: dict) -> int:
         if ev["kind"] == "offre":
             push(f"Offre de stage reçue : {who}", f"{ev['subject'][:150]}{box} — réponds-leur vite")
         elif ev["kind"] == "entretien":
-            push(f"Échange / entretien proposé : {who}",
+            push(f"Entretien proposé : {who}" + (f" — {ev['when']}" if ev.get("when") else ""),
                  f"{ev['subject'][:120]}{box}" + (f" — choisis un créneau : {ev['link']}" if ev.get("link") else " — propose tes disponibilités"))
         n += 1
     return n

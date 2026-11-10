@@ -66,16 +66,100 @@ def mail_urls() -> list:
     return [f"https://mail.google.com/mail/u/{a}/#search/newer_than%3A1d" for a in dict.fromkeys(accs)]
 
 
-def classify(txt: str) -> str:
-    """offre (acceptation) > refus > entretien (créneau, échange) ; l'ordre compte : un refus poli contient parfois
-    « félicitations pour votre parcours »."""
+# ---- proposition d'entretien : seulement les vraies (invitation d'agenda, créneau proposé, lien de rendez-vous) ----
+# jamais une proposition d'entretien : notifications de réseau social, publicité, événements, commandes
+NOT_INTERVIEW = re.compile(
+    r"a accept[ée] votre invitation|accepted your invitation|d[ée]couvrez son r[ée]seau|invitation [àa] (se connecter|rejoindre)|"
+    r"vous invite [àa] (rejoindre|vous connecter|suivre)|souhaite (se connecter|rejoindre votre r[ée]seau)|wants to connect|"
+    r"a consult[ée] votre profil|viewed your profile|nouvelles? relations?|f[ée]licitez|anniversaire|"
+    r"soir[ée]e|concert|spectacle|billets?|r[ée]servation|webinar|webinaire|portes ouvertes|afterwork|salon (de|du|des)|"
+    r"code promo|r[ée]duction|% (de r[ée]duction|off)|soldes|commande|livraison|facture|abonnement|votre panier|"
+    r"se d[ée]sabonner|unsubscribe|g[ée]rer (vos|mes) pr[ée]f[ée]rences|ne plus recevoir", re.I)
+# le message parle bien d'un recrutement
+RECRUIT_CTX = re.compile(r"candidature|stage|internship|application|recrut|poste|profil|talent|\brh\b|\bhr\b|hiring|embauche|"
+                         r"process(us)? de recrutement|offre", re.I)
+MEETING = re.compile(r"entretiens?|interviews?|[ée]change|appel|\bcall\b|visio|rendez-vous|rencontr|meeting|point t[ée]l[ée]phonique|"
+                     r"screening|pr[ée]qualification", re.I)
+# formules qui suffisent à elles seules
+STRONG = re.compile(
+    r"proposition d.entretien|invitation [àa] (un |une |l.)?(entretien|interview|[ée]change)|interview (with|invitation|scheduled|confirmation)|"
+    r"entretien (t[ée]l[ée]phonique|visio|vid[ée]o|rh|technique|de recrutement|de motivation|avec (nous|notre|votre|le |la |l.))|"
+    r"(votre|ton|your) (prochain |next |premier |first )?(entretien|interview)|convocation|"
+    r"(nous|je) (souhaitons|souhaite|aimerions|aimerais|voudrions|voudrais) (vous rencontrer|[ée]changer avec vous|"
+    r"vous proposer un (entretien|[ée]change|appel)|organiser un (entretien|[ée]change|appel))|"
+    r"(we|i)( would|.d) (like|love) to (invite you|schedule|set up|meet|speak|talk|chat)|invite you (to|for) (an? )?(interview|call)|"
+    r"(passer|planifier|organiser|fixer|programmer) (un|une|votre|ton) (entretien|interview|[ée]change t[ée]l[ée]phonique|appel)|"
+    r"test technique|coding (test|challenge)|case study|[ée]tude de cas|assessment", re.I)
+# un créneau est proposé ou demandé
+SLOT_ASK = re.compile(
+    r"cr[ée]neaux?|vos disponibilit[ée]s|tes disponibilit[ée]s|your availabilit|seriez-vous disponible|[êe]tes-vous disponible|"
+    r"serais-tu disponible|are you available|would you be available|quand (seriez|[êe]tes)-vous|when (are|would) you|"
+    r"(choisir|choisissez|r[ée]server|r[ée]servez|s[ée]lectionnez|book|pick|choose|select) (un|une|votre|a|your) "
+    r"(cr[ée]neau|horaire|rendez-vous|time|slot)|calendly|prendre rendez-vous|\b\d{1,2} ?h ?\d{0,2}\b.{0,40}\b\d{1,2} ?h ?\d{0,2}\b", re.I)
+# invitation d'agenda (Google Agenda, Outlook) : « Invitation: … - jeu. 12 nov. 2026 10am - 10:15am »
+CAL_INVITE = re.compile(r"^\s*(invitation( mise [àa] jour| modifi[ée]e)?|updated invitation|invitation updated|nouvel [ée]v[ée]nement)\s*:",
+                        re.I)
+WHEN = re.compile(r"((lun|mar|mer|jeu|ven|sam|dim|mon|tue|wed|thu|fri|sat|sun)[a-zé]*\.? ?\d{1,2} [a-zéû]{3,9}\.?( \d{4})?"
+                  r"( ?[àa@]? ?\d{1,2}(:\d{2}| ?h ?\d{0,2})? ?(am|pm)?)?)", re.I)
+
+
+def is_interview(txt: str, link: str = "") -> bool:
+    """Vraie proposition d'entretien ou de créneau ? Oui si : invitation d'agenda pour un entretien / échange ; formule
+    explicite (« proposition d'entretien », « nous souhaitons vous rencontrer »…) ; créneau proposé ou demandé pour un
+    entretien dans un message de recrutement ; lien de prise de rendez-vous dans un message de recrutement.
+    Non pour une notification LinkedIn (« a accepté votre invitation »), une publicité, un événement."""
+    subject = txt.split("\n")[0]
+    cal = bool(CAL_INVITE.search(subject))
+    if cal and (MEETING.search(subject) or RECRUIT_CTX.search(txt)):
+        return True
+    strong = bool(STRONG.search(txt))
+    if NOT_INTERVIEW.search(txt) and not (strong and RECRUIT_CTX.search(txt) and not re.search(
+            r"a accept[ée] votre invitation|accepted your invitation|d[ée]couvrez son r[ée]seau", txt, re.I)):
+        return False
+    if strong:
+        return True
+    if not RECRUIT_CTX.search(txt):
+        return False
+    if SLOT_ASK.search(txt) and MEETING.search(txt):
+        return True
+    return bool(link) and bool(MEETING.search(txt))
+
+
+def when_of(subject: str) -> str:
+    """Date et heure lues dans l'objet d'une invitation d'agenda (« jeu. 12 nov. 2026 10am »)."""
+    m = WHEN.search(subject or "")
+    return m.group(1).strip() if m else ""
+
+
+def thread_key(who: str, subject: str) -> str:
+    """Même entretien reçu en plusieurs e-mails (invitation, puis « mise à jour » avec une nouvelle heure) : une seule clé."""
+    t = CAL_INVITE.sub("", subject or "")
+    t = re.sub(r"\s[-–]\s.*$", "", t)                      # « - jeu. 12 nov. 2026 10am - 10:15am (UTC+1) (…) »
+    t = re.sub(r"^(re|tr|fwd?|fw)\s*:\s*", "", t.strip(), flags=re.I)
+    return re.sub(r"[^a-z0-9]+", " ", (t or who or "").lower()).strip()[:60]
+
+
+def classify(txt: str, link: str = "") -> str:
+    """refus > offre (acceptation) > entretien (vraie proposition ou créneau) ; l'ordre compte : un refus poli contient
+    parfois « félicitations pour votre parcours ». La première ligne de txt est l'objet."""
+    if CAL_INVITE.search(txt.split("\n")[0]) and is_interview(txt, link):
+        return "entretien"  # une invitation d'agenda n'est jamais un refus
     if REFUS.search(txt):
         return "refus"
-    if OFFER.search(txt):
+    if OFFER.search(txt) and not NOT_INTERVIEW.search(txt):
         return "offre"
-    if SLOT.search(txt) or ACTION.search(txt):
+    if is_interview(txt, link):
         return "entretien"
     return ""
+
+
+def recheck(ev: dict) -> str:
+    """Réévalue une réponse déjà enregistrée avec les règles actuelles (les anciennes fausses alertes disparaissent)."""
+    txt = f"{ev.get('subject', '')}\n{ev.get('snippet', '')} {ev.get('excerpt', '')}"
+    k = classify(txt, ev.get("link", ""))
+    if ev.get("kind") == "offre" and k != "offre":
+        return "réponse" if NOT_INTERVIEW.search(txt) else "offre"
+    return k or "réponse"
 
 
 async def check(browser, base: str = "", bases: list | None = None):
@@ -114,7 +198,10 @@ async def _check_box(browser, base: str, res: dict):
                 continue
             if ALERT_FROM.search(f"{r['from']} {who}") and (ALERT.search(txt) or NEWSLETTER.search(r["subject"])):
                 continue  # alerte d'offres ou lettre d'information d'un site d'emploi : lue par alerts(), pas une réponse
+            txt = f"{r['subject']}\n{r['snippet']}"
             kind = classify(txt)
+            if not kind and NOT_INTERVIEW.search(txt):
+                continue  # notification LinkedIn (invitation acceptée…), publicité, événement : pas une réponse de recruteur
             recruiting = kind or (not ALERT.search(txt) and re.search(r"stage|internship|candidature|application|recrut|entretien|"
                                                                        r"interview|poste|offre", txt, re.I))
             if ACK.search(txt) and kind != "offre":
@@ -129,11 +216,11 @@ async def _check_box(browser, base: str, res: dict):
                 opened += 1
                 body = await _read(tab, r, base)
                 if body:
-                    ev["kind"] = classify(f"{txt} {body['text']}") or ev["kind"]
                     ev["excerpt"] = re.sub(r"\s+", " ", body["text"])[:300]
                     ev["link"] = next((h for h in body["links"] if BOOKING.search(h)), "")
-                    if ev["link"] and ev["kind"] in ("réponse", ""):
-                        ev["kind"] = "entretien"
+                    ev["kind"] = classify(f"{txt} {body['text']}", ev["link"]) or "réponse"
+            ev["when"] = when_of(r["subject"])
+            ev["thread"] = thread_key(who, r["subject"])
             res["events"].append(ev)
             label = f"{who} : {r['subject'][:90]}"
             {"entretien": res["actions"], "offre": res["actions"], "refus": res["refus"]}.get(ev["kind"], res["replies"]).append(

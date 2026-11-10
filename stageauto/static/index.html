@@ -314,7 +314,7 @@ async function refresh() {
     ['Ignorées', c.ignored || 0], ['Invitations', d.invites_today], ['InMails', d.inmails_today], ['Total postulées', d.total_applied]]
     .map(([l, v]) => `<div><b>${v}</b><span class="muted">${l}</span></div>`).join('');
   $('#hotbox').innerHTML = (d.hot_replies || []).map(r => `<div class="alert" style="margin-bottom:6px">
-      <b>${r.kind === 'offre' ? '🎉 Offre / acceptation' : '📅 Échange proposé'} : ${esc(r.company)}</b>
+      <b>${r.kind === 'offre' ? '🎉 Offre / acceptation' : '📅 Entretien proposé'} : ${esc(r.company)}${r.when ? ' — ' + esc(r.when) : ''}</b>
       <span class="muted">— ${esc(r.subject.slice(0, 90))} · ${esc((r.date || '').replace('T', ' ').slice(5, 16))}${r.account ? ' · ' + esc(r.account) : ''}</span>
       ${r.link ? ` <a href="${esc(r.link)}" target="_blank">Choisir un créneau</a>` : ''}</div>`).join('');
   $('#manualbox').innerHTML = (d.manual_list || []).length ? `<h2 style="margin:6px 0">À postuler toi-même (connexion demandée)</h2>
@@ -467,11 +467,11 @@ async function toggleSource(key) { await api('/api/sources/toggle', 'POST', {key
 async function delSource(key) { if (confirm('Ne plus surveiller cette source ?')) { await api('/api/sources/delete', 'POST', {key}); loadSources(); } }
 async function loadReplies() {
   const rows = await api('/api/replies') || [];
-  const KIND = {offre: '🎉 offre / acceptation', entretien: '📅 échange / entretien', refus: 'refus', 'réponse': 'réponse'};
+  const KIND = {offre: '🎉 offre / acceptation', entretien: '📅 entretien proposé', refus: 'refus', 'réponse': 'réponse'};
   $('#rtable').innerHTML = rows.map(r => `<tr><td>${esc((r.date || '').replace('T', ' ').slice(5, 16))}</td>
     <td><span class="st ${r.kind === 'refus' ? 'error' : 'applied'}" style="${r.kind === 'offre' ? 'font-weight:700' : ''}">${esc(KIND[r.kind] || r.kind)}</span></td>
     <td>${esc(r.company)}</td><td>${esc(r.title)}</td>
-    <td class="muted" title="${esc(r.excerpt || '')}">${esc(r.subject)}</td><td class="muted">${esc(r.account || '')}</td>
+    <td class="muted" title="${esc(r.excerpt || '')}">${r.when ? `<b>${esc(r.when)}</b> · ` : ''}${esc(r.subject)}</td><td class="muted">${esc(r.account || '')}</td>
     <td>${r.link ? `<a href="${esc(r.link)}" target="_blank">Choisir un créneau</a>` : ''}</td></tr>`).join('')
     || '<tr><td colspan="5" class="muted">Aucune réponse repérée pour l\'instant.</td></tr>';
 }

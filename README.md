@@ -161,6 +161,14 @@ l'aperçu. Un e-mail non lu est remis en « non lu » après lecture, pour ne pa
 sont pas prises pour des réponses. Le bouton **Exporter (CSV)** de l'onglet Offres donne toutes les candidatures, avec
 la réponse reçue, dans un fichier pour Excel.
 
+**Seulement les vraies propositions d'entretien.** Un message est un « entretien proposé » dans quatre cas : invitation
+d'agenda pour un entretien ou un échange (« Invitation: Interview with … ») ; formule explicite (« proposition
+d'entretien », « nous souhaitons vous rencontrer », « votre prochain entretien », test technique) ; créneau proposé ou
+demandé pour un entretien dans un message de recrutement ; lien de prise de rendez-vous dans un message de recrutement.
+Ne comptent jamais : « X a accepté votre invitation » de LinkedIn, publicités, soirées, webinaires, commandes. Les
+e-mails d'un même entretien (invitation, puis « mise à jour ») ne font qu'une ligne, avec la dernière date ; un
+changement d'heure envoie « Entretien déplacé ». Les anciennes fausses alertes déjà enregistrées disparaissent.
+
 ## Une seule fenêtre Chrome
 
 - Tous les onglets de StageAuto (lecture des offres, LinkedIn, autres sites) s'ouvrent dans **une seule fenêtre** de ton

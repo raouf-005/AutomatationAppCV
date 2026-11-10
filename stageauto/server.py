@@ -456,28 +456,45 @@ async def coverage():
     return out
 
 
+def _replies(limit=80) -> list:
+    """Réponses enregistrées, réévaluées avec les règles actuelles : une ancienne fausse alerte (invitation LinkedIn
+    acceptée, publicité) n'est plus un « entretien » ; les e-mails d'un même entretien ne font qu'une ligne (le dernier)."""
+    from . import gmail
+    out, seen = [], {}
+    for r in db.q("SELECT site, key, note, created FROM pending WHERE kind='reply' ORDER BY id DESC LIMIT ?", (limit,)):
+        d = json.loads(r["note"] or "{}")
+        kind = gmail.recheck({**d, "kind": r["site"]}) if r["site"] in ("entretien", "offre") else r["site"]
+        if kind == "réponse" and r["site"] in ("entretien", "offre") and gmail.NOT_INTERVIEW.search(
+                f"{d.get('subject', '')} {d.get('snippet', '')}"):
+            continue  # ni réponse de recruteur ni entretien
+        thread = d.get("thread") or gmail.thread_key(d.get("who", ""), d.get("subject", ""))
+        if kind == "entretien":
+            who = (d.get("company") or d.get("who") or "").lower().split()
+            k = (kind, thread, who[0].strip(",") if who else "")
+            same = next((o for (s0, s1, s2), o in seen.items() if k[1] == s1 or (k[2] and k[2] == s2)), None)
+            if same:  # même entretien : la ligne gardée reprend la date et le lien s'ils lui manquent
+                same["when"] = same["when"] or d.get("when") or gmail.when_of(d.get("subject", ""))
+                same["link"] = same["link"] or d.get("link", "")
+                continue
+        out.append({"kind": kind, "key": r["key"], "date": r["created"], "company": d.get("company") or d.get("who", ""),
+                    "title": d.get("title", ""), "subject": d.get("subject", ""), "account": d.get("account", ""),
+                    "link": d.get("link", ""), "excerpt": d.get("excerpt", ""),
+                    "when": d.get("when") or gmail.when_of(d.get("subject", ""))})
+        if kind == "entretien":
+            seen[k] = out[-1]
+    return out
+
+
 @app.get("/api/replies")
 async def replies():
     """Réponses des recruteurs repérées dans Gmail (entretien, refus, autre), les plus récentes d'abord."""
-    out = []
-    for r in db.q("SELECT site, key, note, created FROM pending WHERE kind='reply' ORDER BY id DESC LIMIT 40"):
-        d = json.loads(r["note"] or "{}")
-        out.append({"kind": r["site"], "key": r["key"], "date": r["created"], "company": d.get("company") or d.get("who", ""),
-                    "title": d.get("title", ""), "subject": d.get("subject", ""), "account": d.get("account", ""),
-                    "link": d.get("link", ""), "excerpt": d.get("excerpt", "")})
-    return out
+    return _replies()[:40]
 
 
 def hot_replies() -> list:
-    """Offres et propositions d'échange des 7 derniers jours : mises en avant dans la carte « Aujourd'hui »."""
+    """Offres et vraies propositions d'entretien des 7 derniers jours : mises en avant dans la carte « Aujourd'hui »."""
     since = (dt.date.today() - dt.timedelta(days=6)).isoformat()
-    out = []
-    for r in db.q("SELECT site, note, created FROM pending WHERE kind='reply' AND site IN ('offre','entretien') AND created >= ? "
-                  "ORDER BY id DESC LIMIT 10", (since,)):
-        d = json.loads(r["note"] or "{}")
-        out.append({"kind": r["site"], "date": r["created"], "company": d.get("company") or d.get("who", ""),
-                    "subject": d.get("subject", ""), "link": d.get("link", ""), "account": d.get("account", "")})
-    return out
+    return [r for r in _replies() if r["kind"] in ("offre", "entretien") and r["date"] >= since][:10]
 
 
 @app.get("/api/export.csv")
