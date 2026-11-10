@@ -419,7 +419,8 @@ class Agent:
         order = providers.providers_in_order(task="apply")  # l'IA choisie pour postuler d'abord (Réglages → IA)
         tools = TOOLS
         if order and order[0] in providers.LOCAL:  # petit modèle local : peu d'étapes, sinon l'offre est rendue à la main
-            max_steps = min(max_steps, int(s.get("local_agent_steps", 14)))
+            steps = int(s.get("local_agent_steps", 40))
+            max_steps = min(max_steps, 40 if steps == 14 else steps)  # 14 : ancienne valeur par défaut, trop courte
             self.small = True
             tools = [t for t in TOOLS if t["name"] in LOCAL_TOOLS]
         notes = db.method(self.site).get("notes", [])
@@ -449,8 +450,16 @@ class Agent:
             except Exception as e:
                 errors += 1
                 log(f"IA ({conv.provider}) : {e.__class__.__name__} {str(e)[:120]}")
-                if providers.is_limit_error(e):  # limite atteinte : l'offre est rendue, reprise plus tard ou par une autre IA
+                if providers.is_limit_error(e) and conv.provider not in providers.LOCAL:  # limite atteinte : l'offre est rendue, reprise plus tard ou par une autre IA
                     return {"status": "wait_ai", "reason": f"limite d'IA : {str(e)[:140]}", "steps": self.steps}
+                if conv.provider in providers.LOCAL:
+                    # modèle local : jamais de mise en pause ; on insiste, puis cette offre est rendue (CV et lettre
+                    # prêts, « à postuler toi-même ») et le passage continue avec les offres suivantes
+                    if errors >= 5:
+                        return {"status": "blocked", "reason": f"modèle local : {e.__class__.__name__} {str(e)[:100]}",
+                                "steps": self.steps, "provider": conv.provider}
+                    await asyncio.sleep(3)
+                    continue
                 if errors >= 3 or "refusée" in str(e) or e.__class__.__name__ == "AuthenticationError":
                     return {"status": "wait_ai", "reason": f"fournisseur d'IA : {e.__class__.__name__} {str(e)[:100]}",
                             "steps": self.steps}

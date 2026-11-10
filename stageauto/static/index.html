@@ -614,7 +614,9 @@ async function testAI(k) {
   const e = r && r.estimate;
   $('#aitest').textContent = r && r.ok ? `✓ ${AI.providers[k].label} répond (${r.seconds} s)` +
     (e && e.total_min ? ` — estimation : ≈ ${e.total_min} min par candidature (CV et lettre ≈ ${e.cv_s} s, formulaire ≈ ${e.formulaire_s} s ;` +
-      ` lecture ${e.lecture_tok_s} jetons/s, écriture ${e.ecriture_tok_s} jetons/s)` : '') : `✗ ${r ? r.error : 'pas de réponse'}`;
+      ` lecture ${e.lecture_tok_s} jetons/s, écriture ${e.ecriture_tok_s} jetons/s)` +
+      (e.modele ? ` · modèle ${e.modele}` : '') + (e.gpu ? ` · ${e.gpu}` : '') + (e.mesure ? ` · mesure : ${e.mesure}` : '') +
+      (e.fiable === false ? ' (réponse très courte : estimation peu fiable)' : '') : '') : `✗ ${r ? r.error : 'pas de réponse'}`;
   await loadAI(); refresh();
 }
 async function saveCred() {

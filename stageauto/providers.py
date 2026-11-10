@@ -487,6 +487,8 @@ def _auth_error(e: Exception) -> bool:
 
 
 def note_failure(pid: str, e: Exception) -> None:
+    if pid in LOCAL:
+        return  # modèle local : ni limite ni clé ; une erreur ne le met jamais en pause
     if pid and is_limit_error(e) and not limited(pid):
         until = reset_time(e)
         others = [p for p in providers_in_order() if p != pid]
@@ -558,6 +560,7 @@ def _ollama_msgs(msgs: list) -> list:
     return out
 
 
+_OLLAMA_LOCK = threading.Lock()
 THINKERS = r"qwen3|deepseek|stageauto|magistral|r1\b|reason|think"
 _NO_THINK_FLAG: set = set()
 
@@ -622,15 +625,27 @@ def ollama_chat(payload: dict) -> dict:
     if thinker:
         body["think"] = False  # modèle « à réflexion » : réponse directe, plus rapide et JSON propre
     url = base_url("ollama").replace("/v1", "") + "/api/chat"
-    try:
-        r = httpx.post(url, json=body, timeout=900)
-        if r.status_code == 400 and thinker and "think" in r.text.lower():
-            # ce modèle n'accepte pas le réglage « think » : on ne l'envoie plus, les balises <think> sont retirées
-            _NO_THINK_FLAG.add(payload["model"])
-            body.pop("think", None)
-            r = httpx.post(url, json=body, timeout=900)
-    except httpx.HTTPError:
-        raise ProviderError(f"{label('ollama')} : service local injoignable ({url}) — Ollama est-il lancé ?")
+    tmo = httpx.Timeout(int(s.get("local_timeout", 1800)), connect=10)
+    r = None
+    with _OLLAMA_LOCK:  # un appel à la fois : Ollama les traite l'un après l'autre, les suivants attendent ici sans expirer
+        for attempt in (1, 2, 3):
+            try:
+                r = httpx.post(url, json=body, timeout=tmo)
+                if r.status_code == 400 and thinker and "think" in r.text.lower():
+                    # ce modèle n'accepte pas le réglage « think » : on ne l'envoie plus, les balises <think> sont retirées
+                    _NO_THINK_FLAG.add(payload["model"])
+                    body.pop("think", None)
+                    r = httpx.post(url, json=body, timeout=tmo)
+                if r.status_code < 500:
+                    break
+            except httpx.ConnectError:
+                raise ProviderError(f"{label('ollama')} : service local injoignable ({url}) — Ollama est-il lancé ?")
+            except httpx.HTTPError as e:  # réponse trop longue ou coupure : nouvel essai, le modèle reste chargé
+                log(f"modèle local : {e.__class__.__name__} (essai {attempt}/3)")
+                r = None
+            time.sleep(2 * attempt)
+    if r is None:
+        raise ProviderError(f"{label('ollama')} : pas de réponse du modèle local après 3 essais")
     if r.status_code >= 400:
         raise ProviderError(f"{label('ollama')} {r.status_code} : {r.text[:300]}")
     msg = r.json().get("message") or {}
@@ -651,25 +666,55 @@ def ollama_chat(payload: dict) -> dict:
                                                     "load_duration")}}
 
 
+def ollama_gpu(model: str) -> str:
+    """Où tourne le modèle chargé : part de la carte graphique d'après Ollama (/api/ps)."""
+    try:
+        r = httpx.get(base_url("ollama").replace("/v1", "") + "/api/ps", timeout=3).json()
+        for m in r.get("models", []):
+            if m.get("name") == model or m.get("model") == model:
+                size, vram = m.get("size") or 0, m.get("size_vram") or 0
+                if not size:
+                    return ""
+                pct = round(100 * vram / size)
+                return "100 % carte graphique" if pct >= 99 else ("processeur seulement" if pct <= 1 else
+                                                                  f"{pct} % carte graphique, le reste sur le processeur")
+    except Exception:
+        pass
+    return ""
+
+
 def ollama_estimate() -> dict:
-    """Mesure la vitesse du modèle local (lecture et écriture, en jetons/s) sur une demande de la taille d'une étape réelle,
-    et en déduit le temps d'une candidature : CV + lettre (adaptation courte, compilation) puis formulaire (~8 étapes)."""
+    """Mesure la vitesse du modèle local sur une demande de la taille d'une étape réelle et en déduit le temps d'une
+    candidature : CV + lettre (adaptation courte, compilation) puis formulaire (~8 étapes). La vitesse d'écriture est
+    mesurée au chronomètre (jetons écrits / temps réel hors lecture), sur une demande différente à chaque fois : les
+    durées annoncées par Ollama sont fausses quand la demande est déjà en mémoire ou que la réponse est très courte."""
+    model = model_of("ollama")
     filler = ("Profil : étudiant en Master 2 Sécurité et Réseaux, stage de fin d'études de 6 mois, cybersécurité, SOC, "
               "réseaux, DevOps. ") * 60  # ~1 500 jetons, comme une étape de formulaire
-    payload = {"model": model_of("ollama"), "max_tokens": 160,
-               "messages": [{"role": "system", "content": "Réponds en français."},
-                            {"role": "user", "content": filler + "\nÉcris un paragraphe de motivation de 100 mots."}]}
-    ollama_chat(payload)  # chargement du modèle en mémoire (non compté)
-    st = ollama_chat(payload)["_stats"]
-    pp = st["prompt_eval_count"] / max(st["prompt_eval_duration"] / 1e9, 1e-3) if st["prompt_eval_count"] else 0
-    gen = st["eval_count"] / max(st["eval_duration"] / 1e9, 1e-3) if st["eval_count"] else 0
-    if not gen:
+
+    def ask(n):
+        payload = {"model": model, "max_tokens": 220,
+                   "messages": [{"role": "system", "content": "Réponds en français."},
+                                {"role": "user", "content": f"Demande n° {time.time():.0f}-{n}. " + filler +
+                                 "\nÉcris un paragraphe de motivation de 120 mots, sans titre."}]}
+        t0 = time.time()
+        st = ollama_chat(payload)["_stats"]
+        return st, time.time() - t0
+    ask(0)  # chargement du modèle en mémoire (non compté)
+    st, wall = ask(1)
+    n_out, n_in = st["eval_count"], st["prompt_eval_count"]
+    read_s = st["prompt_eval_duration"] / 1e9
+    if not n_out:
         return {}
-    pp = pp or gen * 8
+    gen_wall = n_out / max(wall - read_s, 0.05)                       # au chronomètre
+    gen_api = n_out / max(st["eval_duration"] / 1e9, 1e-3) if st["eval_duration"] else gen_wall
+    gen = max(gen_wall, gen_api) if n_out < 40 else gen_wall          # réponse très courte : mesure peu fiable
+    pp = n_in / max(read_s, 1e-3) if n_in and read_s > 0.05 else gen * 8
     cv = 3000 / pp + 700 / gen + 15          # adaptation courte (lecture de l'offre, réponse) + compilation LaTeX
     form = 8 * (1500 / pp + 120 / gen + 3)  # 8 étapes : page lue, action décidée, action faite dans Chrome
     return {"lecture_tok_s": round(pp), "ecriture_tok_s": round(gen, 1), "cv_s": round(cv), "formulaire_s": round(form),
-            "total_min": round((cv + form) / 60, 1)}
+            "total_min": round((cv + form) / 60, 1), "modele": model, "gpu": ollama_gpu(model),
+            "mesure": f"{n_out} jetons écrits en {wall:.1f} s", "fiable": n_out >= 40}
 
 
 def oa_post(payload: dict, pid: str) -> dict:

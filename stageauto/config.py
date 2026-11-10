@@ -93,7 +93,7 @@ DEFAULT_SETTINGS = {
     "apply_provider": "",             # IA qui postule (formulaires) ; vide = fournisseur principal
     "cv_provider": "",                # IA qui écrit les CV et lettres ; vide = fournisseur principal
     "local_temperature": 0.3,         # modèle local : réponses stables (JSON, appels d'outils)
-    "local_agent_steps": 14,          # modèle local : étapes au plus par formulaire, sinon offre « à postuler toi-même »
+    "local_agent_steps": 40,          # modèle local : étapes au plus par formulaire, sinon offre « à postuler toi-même »
     "local_ctx": 16384,               # Ollama : taille du contexte (jetons) ; plus grand = consignes complètes, plus de mémoire
     "ollama_native": True,            # Ollama par son API native (contexte long, JSON contraint), plus fiable             # Ollama / LM Studio sur ce PC : dernier recours si toutes les autres IA échouent
     "rule_only_today": True,          # règles (onglet Règles) : offres des dernières 24 heures seulement

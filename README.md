@@ -210,10 +210,16 @@ un réentraînement.
 
 Côté application, pour qu'il soit rapide : la « réflexion » est coupée (et retirée si le modèle l'écrit quand même), les
 appels d'outils écrits en texte (`<tool_call>…`) sont compris, il ne reçoit que 12 outils au lieu de 16 et des vues de
-page réduites, 14 étapes au plus par formulaire (`local_agent_steps`), et les CV passent par le mode court (environ 2 000
+page réduites, et les CV passent par le mode court (environ 2 000
 caractères de consignes au lieu de 40 000 ; les puces restent celles de ton profil). Une candidature qu'il n'arrive pas à
 finir passe dans « À postuler toi-même » avec le CV et la lettre prêts. « Enregistrer et tester l'IA » affiche une
 **estimation** du temps par candidature.
+
+**Le modèle local ne s'arrête jamais.** Une erreur ou une réponse lente ne le met pas en pause : l'appel est refait
+(3 essais, délai de 30 min par appel, réglage `local_timeout`), les demandes attendent leur tour au lieu d'expirer (une
+seule à la fois vers Ollama), il a 40 étapes par formulaire comme les autres IA, et une offre qu'il ne finit vraiment
+pas passe dans « À postuler toi-même » pendant que le passage continue avec les suivantes. Le test affiche le modèle
+utilisé, la part qui tourne sur la carte graphique et la mesure (jetons écrits, temps réel).
 
 ## Choisir l'IA qui postule
 
