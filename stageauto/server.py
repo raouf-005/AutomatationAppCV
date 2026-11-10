@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import CODE, cdp, db, pipeline, providers, sources, vault
+from . import CODE, cdp, db, memory, pipeline, providers, sources, vault
 from .config import CANDIDATURES, DATA, IS_WIN, PKG, load_settings, save_settings
 from .notify import ALERTS, LOG, log
 from .sites import SITES
@@ -503,7 +503,30 @@ async def export_csv():
 async def learning():
     recipes = {r["site"]: json.loads(r["data"]).get("recipe") for r in db.q("SELECT * FROM methods WHERE site LIKE '%|%'")}
     answers = db.q("SELECT question, answer, source, uses FROM answers ORDER BY uses DESC, rowid DESC LIMIT 200")
-    return {"curve": db.learning_curve(), "recipes": recipes, "answers": answers, "delays": db.delay_stats()}
+    return {"curve": db.learning_curve(), "recipes": recipes, "answers": answers, "delays": db.delay_stats(),
+            "memory": memory.overview()}
+
+
+@app.post("/api/forget_wall")
+async def forget_wall(req: Request):
+    """Oublie qu'un site exige un compte : il sera réessayé à la prochaine offre."""
+    memory.forget((await req.json()).get("host", ""))
+    return {"ok": True}
+
+
+@app.get("/api/letter")
+async def letter(key: str):
+    """Texte de la lettre d'une offre, pour la coller dans un formulaire rempli à la main."""
+    r = db.q("SELECT folder, data FROM offers WHERE key=?", (key,))
+    if not r:
+        return {"text": ""}
+    d = json.loads(r[0]["data"] or "{}")
+    txt = d.get("lettre_txt") or ""
+    for folder in (d.get("gen_folder"), r[0]["folder"]):
+        f = Path(folder) / "lettre.txt" if folder else None
+        if not txt and f and f.exists():
+            txt = f.read_text(encoding="utf-8")
+    return {"text": txt}
 
 
 @app.post("/api/cred")

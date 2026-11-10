@@ -66,6 +66,8 @@ DEFAULT_SETTINGS = {
     "show_cursor": True,              # curseur visible dans la page pendant que l'application agit
     "spectator_mode": True,           # le curseur glisse, parcourt les pages et annonce ce qu'il fait (un peu plus lent)
     "use_memory": True,               # rejouer les méthodes mémorisées avant d'appeler l'IA
+    "generic_replay": True,           # site jamais vu : essai sans IA avec les boutons courants avant d'appeler l'agent
+    "contacts_presearch": True,       # LinkedIn : recruteurs et managers cherchés et classés sans IA avant l'agent
     "llm_provider": "anthropic",      # anthropic | claude_code | openai | gemini | kimi | qwen | deepseek | mistral |
                                       # openrouter | groq | ollama | lmstudio | custom  (voir providers.py)
     "llm_fallback": True,             # les autres fournisseurs configurés prennent le relais si le premier échoue

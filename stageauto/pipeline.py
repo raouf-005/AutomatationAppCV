@@ -17,7 +17,7 @@ import re
 import shutil
 from pathlib import Path
 
-from . import cdp, cvskill, db, gmail, linkedin_contacts, priority, providers, replay, rules, sources, vault  # sources : « carrieres »
+from . import cdp, cvskill, db, gmail, linkedin_contacts, memory, priority, providers, replay, rules, sources, vault  # sources : « carrieres »
 from .agent import Agent
 from .config import CANDIDATURES, DOMAIN_NEG, DOMAIN_POS, WORK, load_settings
 from .forms import NeedLogin, nrm
@@ -296,8 +296,9 @@ async def apply_one(browser, o, lane=1):
                 res = {"status": "fallback", "reason": f"{e.__class__.__name__}", "tab": tab}
             if res:
                 tab = res.get("tab") or tab
-                mode = "replay"
-                log(f"méthode mémorisée {rkey} : {res['status']} {res.get('reason', '')}")
+                mode = res.get("mode") or "replay"
+                log((f"essai sans IA {rkey}" if mode == "générique" else f"méthode mémorisée {rkey}")
+                    + f" : {res['status']} {res.get('reason', '')}")
         if (not res or res["status"] == "fallback") and not await asyncio.to_thread(providers.ready):
             return {"status": "wait_ai", "reason": "IA en pause : candidature reprise plus tard", "seconds": 0, "steps": 0}
         if not res or res["status"] == "fallback":
@@ -307,10 +308,12 @@ async def apply_one(browser, o, lane=1):
                     "Succès constaté : finish applied." + (("\n\n" + rules.prompt_block()) if rules.custom() else ""))
             ag = Agent(browser, tab, o["site"], files, o)
             ag.recipe_key = rkey
-            if res:
+            if res and (res.get("progress") or mode == "replay"):
                 ag.extra_intro = (f"La relecture rapide de la méthode mémorisée s'est arrêtée ({res.get('reason', '')}). "
                                   "Continue depuis la page actuelle, sans recommencer ce qui est déjà rempli.")
-                mode = "replay+agent"
+            if res:
+                mode = mode + "+agent"
+            learned = None
             res = await ag.run(goal)
             tab = ag.tab or tab
             try:  # « Postuler » a pu mener au site carrière de l'entreprise : il sera surveillé directement
@@ -319,12 +322,20 @@ async def apply_one(browser, o, lane=1):
                 pass
         else:
             res["steps"] = 0
+            learned = res.get("learned")
         res["seconds"] = round((dt.datetime.now() - t0).total_seconds())
         try:
             res["final_url"] = await tab.url()
         except Exception:
             res["final_url"] = ""
         db.record_apply(o["site"], rkey, mode, res["seconds"], res.get("steps", 0), res["status"], res.get("provider", ""))
+        if res["status"] == "applied":  # mémoire : site de départ, site final et plateforme de recrutement
+            try:
+                saved = memory.learn_success(rkey, url_now, res["final_url"], learned)
+                if saved:
+                    log("mémoire : méthode gardée pour " + ", ".join(saved))
+            except Exception as e:
+                log(f"mémoire : {e.__class__.__name__} {str(e)[:80]}")
         if mode.startswith("replay"):  # fiabilité de la méthode mémorisée
             m = db.method(rkey)
             if m.get("recipe"):
@@ -493,6 +504,8 @@ async def apply_and_record(browser, o, summary, lane=1):
         db.set_status(o["key"], "already", ("déjà postulé : " + res.get("reason", ""))[:300])
     elif manual_needed(o, res):
         db.set_status(o["key"], "manual", ("connexion demandée : " + (res.get("reason") or ""))[:300])
+        if st in ("needs_login", "blocked") and res.get("provider") not in providers.LOCAL and "mémorisé" not in (res.get("reason") or ""):
+            memory.note_account(res.get("final_url") or "", res.get("reason") or "")  # reconnu sans IA la prochaine fois
         summary.setdefault("manual", []).append(o)
         log(f"à postuler toi-même : {o['company']} — {o['title'][:60]} (connexion demandée ; CV et lettre prêts)")
     elif st == "needs_login":

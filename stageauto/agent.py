@@ -10,7 +10,7 @@ import json
 import re
 import time
 
-from . import db, forms, providers, vault
+from . import db, forms, memory, providers, vault
 from .cdp import BrowserError, Tab
 from .config import PROFILE, load_settings
 from .notify import log
@@ -275,7 +275,12 @@ class Agent:
                 self._remember(item["group"], opts, label)
             if newt:
                 self.tab = newt
-                return "Nouvel onglet ouvert, tu es dessus maintenant.\n" + self._view(await newt.snapshot())
+                snap = await newt.snapshot()
+                why = self.recipe_key and memory.wall(memory.host_of(snap.get("url")))
+                if why:  # site qui a déjà exigé un compte : inutile d'y dépenser des étapes
+                    self.result = {"status": "needs_login", "reason": why, "method_note": "", "contacts": []}
+                    return "terminé : " + why
+                return "Nouvel onglet ouvert, tu es dessus maintenant.\n" + self._view(snap)
             await tab.settle(8)
             return "OK\n" + self._view(await tab.snapshot(), limit=6000)
         if name == "type":
@@ -469,7 +474,7 @@ class Agent:
                 except Exception as e:
                     out, err = f"Erreur : {e.__class__.__name__} {e}"[:300], True
                 results.append({"id": c.id, "name": c.name, "content": out, "is_error": err})
-                if c.name == "finish":
+                if c.name == "finish" or self.result is not None:
                     break
             done = {r["id"] for r in results}
             results += [{"id": c.id, "name": c.name, "content": "ignoré (tâche terminée)"} for c in st.calls if c.id not in done]

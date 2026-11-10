@@ -289,6 +289,38 @@ fois que voulu.
   écran. Le bouton **« Voir Chrome »** du tableau de bord les met au premier plan.
 - Ta vraie souris reste libre : le curseur vert est dessiné dans la page, il ne prend pas le contrôle de ta souris.
 
+## Apprendre plus vite : chaque site, chaque plateforme
+
+- **Essai sans IA sur un site jamais vu** : avant d'appeler l'agent, l'application tente les boutons courants (« Postuler »,
+  « Candidature simplifiée », « Suivant », « Envoyer ma candidature »…), remplit le formulaire avec tes réponses
+  autorisées et vérifie la confirmation. Si tout passe, la candidature part sans aucun appel à l'IA et la méthode est
+  mémorisée ; au premier imprévu (question inconnue, pas de formulaire), l'agent reprend sur la page en l'état. Sans
+  méthode connue, seuls des libellés exacts sont cliqués et l'envoi n'est fait que dans un formulaire affiché
+  (réglage `generic_replay`).
+- **Mémoire par plateforme de recrutement** : une réussite sur le Greenhouse, Lever, SmartRecruiters, Teamtailor,
+  Recruitee… d'une entreprise sert aussitôt à toutes les autres entreprises de la même plateforme.
+- **Mémoire du site final** : quand « Postuler » mène de LinkedIn ou HelloWork au site de l'entreprise, la méthode est
+  rangée sous ce site, pas mélangée avec les autres.
+- **Sites qui demandent un compte, reconnus sans IA** : un site qui a exigé un compte une fois est reconnu dès
+  l'arrivée (45 jours) ; l'offre va tout de suite dans « À postuler toi-même », sans dépenser d'étapes. Après deux sites
+  d'une même plateforme (Workday, Taleo…), toute la plateforme est reconnue. Bouton « Réessayer ce site » dans l'onglet
+  Mémoire ; ignoré si tu as enregistré des identifiants pour ce site.
+- **Postuler à la main plus vite** : dans « À postuler toi-même », bouton **Copier la lettre** à côté des PDF.
+- L'onglet **Mémoire** liste les sites d'emploi, sites d'entreprise et plateformes mémorisés.
+
+## Contacts LinkedIn : recruteurs et managers mieux ciblés
+
+- **L'auteur de l'offre d'abord** : sur chaque offre LinkedIn, le bloc « Rencontrez l'équipe de recrutement » est lu ;
+  la personne qui a publié l'offre passe en tête.
+- **Deux recherches faites sans IA** : `"Entreprise" (recruteur OR "talent acquisition" OR RH OR campus…)` et
+  `"Entreprise" (manager OR responsable OR "head of"…) (mots du domaine du poste : SOC, réseau, DevOps…)`. Le nom de
+  l'entreprise est nettoyé (sans « SAS », « France », parenthèses).
+- **Classement** : travaille actuellement dans l'entreprise, RH / recrutement (bonus stages et campus), manager du
+  domaine du poste, relation de 1er ou 2e niveau ; étudiants, stagiaires, personnes en recherche et anciens salariés
+  sont écartés, comme les personnes déjà contactées.
+- L'agent reçoit cette liste classée et ouvre directement les profils : moins d'étapes (30 au lieu de 45), moins de
+  jetons. Réglage `contacts_presearch`. Limites inchangées : 20 invitations par jour.
+
 ## Mémoire des sites et courbe d'apprentissage
 
 - Après chaque candidature réussie, l'application **mémorise la méthode du site** : boutons pour ouvrir le formulaire
@@ -433,6 +465,7 @@ stageauto/
   cdp.py              couche navigateur (extension ou Playwright), souris/clavier humains, curseur visible, instantané de page
   providers.py        fournisseurs d'IA : Claude ou service compatible OpenAI (clé personnelle), relais automatique
   replay.py           relecture des méthodes mémorisées sans IA
+  memory.py           mémoire par site, site final et plateforme de recrutement ; murs de compte reconnus sans IA
   priority.py         priorité des offres (récence, « premiers candidats ») et pré-tri sans IA
   agent.py            agent Claude (outils read_page, find, click, type, upload, auto_fill, fill_credentials, finish…)
   forms.py            réponses autorisées, remplissage automatique, détection des questions interdites

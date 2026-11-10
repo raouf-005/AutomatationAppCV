@@ -229,6 +229,22 @@ LI_CARDS_JS = r"""() => { const out = {};
   return Object.values(out); }"""
 
 
+HIRERS_JS = r"""() => { const out = []; const seen = new Set();
+  const heads = [...document.querySelectorAll('h2, h3, [role=heading], .text-heading-medium, .jobs-poster__header')].filter(h =>
+    /équipe de recrutement|hiring team|personnes que vous pouvez contacter|people you can reach|a publié cette offre|job poster|publiée par/i
+      .test(h.innerText || ''));
+  for (const h of heads) { let box = h.parentElement;
+    for (let i = 0; i < 4 && box && !box.querySelector('a[href*="/in/"]'); i++) box = box.parentElement;
+    if (!box) continue;
+    box.querySelectorAll('a[href*="/in/"]').forEach(a => { const url = a.href.split('?')[0].replace(/\/$/, '');
+      if (seen.has(url) || !/\/in\/[^/]+$/.test(url)) return;
+      const card = a.closest('li, .hirer-card__container, [class*=hirer], div') || a;
+      const lines = (card.innerText || a.innerText || '').split('\n').map(s => s.trim()).filter(s => s);
+      if (!lines.length) return; seen.add(url);
+      out.push({url, name: lines[0].replace(/\s*(•.*|\(.*\))$/, ''), headline: lines.slice(1, 4).join(' | ').slice(0, 200)}); }); }
+  return out.slice(0, 3); }"""
+
+
 class LinkedIn(SiteDef):
     async def login_state(self, tab):
         # 1. cookie de session (HttpOnly, lu par Chrome) : indépendant de l'apparence de la page
@@ -338,6 +354,10 @@ class LinkedIn(SiteDef):
         offer["meta"] = top[:700]  # « il y a 2 heures · 12 candidats », « Soyez parmi les premiers… »
         offer["already"] = offer.get("already") or bool(re.search(r"Candidature envoyée|Vous avez postulé|Applied \d", top))
         offer["easy"] = await tab.eval("() => [...document.querySelectorAll('button')].some(b => /Candidature simplifiée|Easy Apply/.test(b.innerText + (b.getAttribute('aria-label') || '')))")
+        try:  # « Rencontrez l'équipe de recrutement » : la personne qui a publié l'offre, meilleur contact possible
+            offer["hirers"] = await tab.eval(HIRERS_JS) or []
+        except Exception:
+            offer["hirers"] = []
         return offer
 
     async def start(self, tab, offer):

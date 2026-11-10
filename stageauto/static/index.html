@@ -163,6 +163,11 @@ a{color:var(--accent)}
       <p class="muted">Chaque candidature réussie mémorise la méthode du site ; les suivantes la rejouent sans IA quand c'est possible.</p>
       <div class="tablewrap"><table><thead><tr><th>Site</th><th>Candidatures</th><th>Réussies</th><th>Temps moyen (5 premières → 5 dernières)</th>
         <th>Étapes IA (5 premières → 5 dernières)</th><th>Rejouées sans IA</th></tr></thead><tbody id="curve"></tbody></table></div>
+      <h2 style="margin-top:16px">Sites mémorisés</h2>
+      <p class="muted">Une réussite sert au site, au site final de l'entreprise et à toute sa plateforme de recrutement
+        (Greenhouse, Lever, SmartRecruiters…). Un site jamais vu est d'abord essayé sans IA avec les boutons courants.</p>
+      <div id="memsum" class="muted"></div>
+      <h2 style="margin-top:16px">Sites qui demandent un compte (reconnus sans IA)</h2><div id="walls" class="muted"></div>
       <h2 style="margin-top:16px">Méthodes mémorisées</h2><div id="recipes" class="muted"></div>
       <h2 style="margin-top:16px">Réponses apprises (formulaires)</h2>
       <div class="tablewrap"><table><thead><tr><th>Question</th><th>Réponse</th><th>Origine</th><th>Utilisée</th></tr></thead><tbody id="answers"></tbody></table></div>
@@ -317,6 +322,7 @@ async function refresh() {
     d.manual_list.map(m => `<div class="row"><span class="grow"><b>${esc(m.company)}</b> — ${esc(m.title)}
       <span class="muted">(${esc(SITES[m.site] || m.site)})</span></span>
       <a href="${esc(m.url)}" target="_blank">Ouvrir l'offre</a> ${pdfLinks(m.folder)}
+      <button onclick="copyLetter('${esc(m.key)}', this)">Copier la lettre</button>
       <button onclick="markApplied('${esc(m.key)}')">J'ai postulé</button></div>`).join('') : '';
   $('#failedbox').innerHTML = d.failed_today ? `<div class="row" style="border:0"><span class="grow"><b>${d.failed_today}</b>
       candidature(s) échouée(s) aujourd'hui (erreur, connexion demandée, formulaire bloquant)${d.retry_waiting ? ` · réessai en attente de la fin du passage` : ''}</span>
@@ -485,7 +491,21 @@ async function loadLearning() {
   $('#recipes').innerHTML = Object.entries(L.recipes).filter(([, r]) => r).map(([k, r]) => `<div class="row" style="display:block"><b>${esc(k)}</b>
     <span class="muted">(${r.ok || 0} réussite(s), ${r.fallbacks || 0} reprise(s) par l'IA)</span><br>ouvrir : ${esc((r.open || []).join(' › ') || '—')} ·
     étapes : ${esc((r.next || []).join(' › ') || '—')} · envoi : ${esc((r.submit || []).join(' / ') || '—')}</div>`).join('') || 'Aucune méthode mémorisée.';
+  const M = L.memory || {sites: [], walls: []}, cnt = k => M.sites.filter(x => x.kind === k).length;
+  $('#memsum').innerHTML = M.sites.length ? `<b>${cnt("site d'emploi")}</b> site(s) d'emploi · <b>${cnt("site d'entreprise")}</b> site(s) d'entreprise ·
+    <b>${cnt('plateforme')}</b> plateforme(s) de recrutement : ` + M.sites.slice(0, 40).map(x =>
+      `<span class="pill">${esc(x.key.replace(/^(ext|ats)\|/, ''))} ✓${x.ok}</span>`).join(' ') : 'Aucun site mémorisé pour l\'instant.';
+  $('#walls').innerHTML = M.walls.map(w => `<div class="row"><span class="grow"><b>${esc(w.host.replace(/^ats\|/, 'plateforme '))}</b>
+    <span class="muted">— ${esc(w.note || '')} · ${esc(w.updated)}</span></span>
+    <button onclick="forgetWall('${esc(w.host)}')">Réessayer ce site</button></div>`).join('') || 'Aucun.';
   $('#answers').innerHTML = L.answers.map(a => `<tr><td>${esc(a.question)}</td><td>${esc(a.answer)}</td><td class="muted">${esc(a.source)}</td><td>${a.uses}</td></tr>`).join('');
+}
+async function forgetWall(h) { await api('/api/forget_wall', 'POST', {host: h}); loadLearning(); }
+async function copyLetter(key, btn) {
+  const r = await api('/api/letter?key=' + encodeURIComponent(key)); if (!r || !r.text) { btn.textContent = 'Lettre introuvable'; return; }
+  try { await navigator.clipboard.writeText(r.text); btn.textContent = '✓ Lettre copiée'; }
+  catch (e) { const t = document.createElement('textarea'); t.value = r.text; document.body.appendChild(t); t.select();
+    document.execCommand('copy'); t.remove(); btn.textContent = '✓ Lettre copiée'; }
 }
 async function loadNotes() {
   const n = await api('/api/notes') || {};
