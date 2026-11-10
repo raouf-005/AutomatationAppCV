@@ -56,7 +56,8 @@ def tailor(offer: dict) -> dict | None:
     user = (f"Entreprise : {offer.get('company')}\nIntitulé : {offer.get('title')}\nLieu : {offer.get('location')}\n"
             f"Source : {offer.get('site')}\n\nDescription :\n{(offer.get('description') or '')[:12000]}"
             + (("\n\n" + rules.prompt_block(offer)) if rules.prompt_block(offer) else ""))
-    conv = providers.JsonConversation(_tailor_system(), TAILOR_SCHEMA, max_tokens=16000, effort="medium", name="adaptation")
+    conv = providers.JsonConversation(_tailor_system(), TAILOR_SCHEMA, max_tokens=16000, effort="medium", name="adaptation",
+                                      order=providers.providers_in_order(task="cv"))
     d = conv.ask(user)
     if d is None:
         log("adaptation : réponse illisible ou déclinée")
@@ -136,7 +137,8 @@ def tailor_local(offer: dict) -> dict | None:
     user = (f"Entreprise : {offer.get('company')}\nIntitulé : {offer.get('title')}\nLieu : {offer.get('location')}\n\n"
             f"Offre (extrait) :\n{(offer.get('description') or '')[:3500]}"
             + (("\n\n" + rules.prompt_block(offer)) if rules.prompt_block(offer) else ""))
-    d = providers.JsonConversation(sysmsg, LOCAL_SCHEMA, max_tokens=1200, effort="low", name="adaptation locale").ask(user)
+    d = providers.JsonConversation(sysmsg, LOCAL_SCHEMA, max_tokens=1200, effort="low", name="adaptation locale",
+                                   order=providers.providers_in_order(task="cv")).ask(user)
     if not d:
         return None
     low = profil.lower()

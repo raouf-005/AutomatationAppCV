@@ -1,15 +1,25 @@
 # Modèle local réglé pour StageAuto (créé par installer_modele_local.bat : ollama create stageauto -f ollama\Modelfile)
-# Base : petit modèle de 4 milliards de paramètres, bon en JSON et en appels d'outils. Remplace par qwen2.5:3b ou
-# gemma3:4b si qwen3:4b n'est pas disponible.
-FROM qwen3:4b
-PARAMETER temperature 0.2
-PARAMETER top_p 0.9
-PARAMETER top_k 30
-PARAMETER repeat_penalty 1.08
+# Base : DeepSeek-V4-Pro-Qwen3.5-9B de Jackrong (9 milliards de paramètres, appels d'outils, suit bien un format imposé),
+# version GGUF du même auteur, quantification Q4_K_M (~5,8 Go). PC avec peu de mémoire : remplace :Q4_K_M par :IQ4_XS.
+FROM hf.co/Jackrong/DeepSeek-V4-Pro-Qwen3.5-9B-MTP-GGUF:Q4_K_M
+
+# Réglages pour des candidatures : réponses stables et courtes (JSON du CV, appels d'outils du formulaire).
+# Température basse sans être nulle (à 0, ces modèles se répètent) ; top_p / top_k conseillés pour Qwen sans réflexion.
+PARAMETER temperature 0.3
+PARAMETER top_p 0.8
+PARAMETER top_k 20
+PARAMETER repeat_penalty 1.05
+# Contexte : assez pour les consignes, le profil et une page de formulaire ; au-delà, la lecture ralentit sans rien apporter.
 PARAMETER num_ctx 16384
+# Une étape de formulaire tient en quelques centaines de jetons : borne haute pour ne jamais partir dans un long texte.
+PARAMETER num_predict 2048
+
 SYSTEM """Tu es l'assistant de candidature de StageAuto. Règles absolues :
 - Tu n'inventes jamais rien : seuls les faits fournis dans le profil existent (diplôme, expériences, compétences, chiffres).
+- Pas de réflexion écrite : tu réponds directement.
 - Quand un format JSON est demandé, tu réponds uniquement par ce JSON, complet, sans texte autour.
-- Quand des outils sont proposés, tu appelles un outil à chaque étape, avec des arguments exacts (références e12…).
+- Quand des outils sont proposés, tu appelles un outil à chaque étape, avec des arguments exacts (références e12…) ;
+  auto_fill d'abord sur chaque étape de formulaire, finish dès que la candidature est confirmée ou impossible.
 - Phrases courtes, ton professionnel, français par défaut (anglais seulement si demandé).
-- Une question sur une donnée sensible absente du profil (titre de séjour, casier, pièce d'identité, banque) : tu t'arrêtes."""
+- Une question sur une donnée sensible absente du profil (titre de séjour, casier, pièce d'identité, banque) ou un compte
+  à créer : tu t'arrêtes (finish blocked ou needs_login)."""

@@ -177,9 +177,13 @@ a{color:var(--accent)}
             d'identification Windows.</p>
           <label class="f">Fournisseur principal<select id="s_llm_provider" onchange="renderAIForm()"></select></label>
           <div id="aiform"></div>
+          <label class="f">IA qui postule (remplit les formulaires dans Chrome)<select id="s_apply_provider"></select></label>
+          <label class="f">IA qui écrit les CV et les lettres<select id="s_cv_provider"></select></label>
+          <p class="muted" style="font-size:12px;margin:2px 0 8px">Par défaut : le fournisseur principal. Si l'IA choisie est en
+            panne ou à sa limite, les autres prennent le relais.</p>
           <label class="f"><span><input type="checkbox" id="s_llm_fallback"> Si le fournisseur principal échoue, essayer les autres fournisseurs prêts</span></label>
           <label class="f"><span><input type="checkbox" id="s_local_backup"> Dernier recours : modèle local Ollama sur ce PC (modèle choisi tout seul
-            parmi ceux installés ; installer Ollama puis <code>ollama pull qwen2.5:14b</code>)</span></label>
+            parmi ceux installés ; le plus simple : double-clique sur <code>installer_modele_local.bat</code>, qui crée le modèle réglé « stageauto »)</span></label>
           <div class="row" style="border:0"><button class="primary" onclick="saveAndTestAI()">Enregistrer et tester l'IA</button>
             <span class="muted" id="aitest"></span></div>
           <div id="ailist" style="margin-top:6px"></div>
@@ -528,9 +532,14 @@ async function loadAI() {
   const sel = $('#s_llm_provider'), cur = sel.value || AI.primary;
   sel.innerHTML = Object.entries(AI.providers).map(([k, p]) => `<option value="${k}">${esc(p.label)}</option>`).join('');
   sel.value = AI.providers[cur] ? cur : AI.primary;
+  for (const id of ['apply_provider', 'cv_provider']) { const e = $('#s_' + id); if (!e) continue;
+    const v = e.dataset.loaded ? e.value : (S[id] || '');
+    e.innerHTML = '<option value="">Comme le fournisseur principal</option>' + Object.entries(AI.providers).map(([k, p]) =>
+      `<option value="${k}">${esc(p.label)}${p.ok ? '' : ' — pas prêt'}</option>`).join('');
+    e.value = AI.providers[v] ? v : ''; e.dataset.loaded = '1'; }
   renderAIForm();
   $('#ailist').innerHTML = '<h2 style="margin-top:12px">État des fournisseurs</h2>' + Object.entries(AI.providers).map(([k, p]) =>
-    `<div class="row"><span class="dot ${p.ok ? 'ok' : ''}"></span><span class="grow">${esc(p.label)}${AI.order[0] === k ? ' <b>(utilisé)</b>' : ''}</span>
+    `<div class="row"><span class="dot ${p.ok ? 'ok' : ''}"></span><span class="grow">${esc(p.label)}${AI.order[0] === k ? ' <b>(principal)</b>' : ''}${AI.apply === k ? ' <b>(postule)</b>' : ''}${AI.cv === k ? ' <b>(CV)</b>' : ''}</span>
      <span class="muted" style="font-size:12px">${esc(p.why)}</span></div>`).join('');
 }
 function renderAIForm() {

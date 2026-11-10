@@ -91,7 +91,7 @@ _OLLAMA = {"t": 0.0, "models": []}
 # modèles capables de JSON et d'outils, du plus adapté au moins adapté (le plus gros d'une même famille d'abord)
 # « stageauto » : modèle réglé pour l'application (ollama/Modelfile, créé par installer_modele_local.bat) ; puis les
 # familles qui suivent le mieux un JSON et des outils, y compris en petite taille (4 milliards de paramètres)
-_OLLAMA_PREF = ("stageauto", "qwen3", "qwen2.5", "gemma3", "llama3.3", "llama3.1", "llama3.2", "mistral-small", "mistral-nemo",
+_OLLAMA_PREF = ("stageauto", "hf.co/jackrong/deepseek-v4-pro-qwen3.5", "qwen3.5", "qwen3", "qwen2.5", "gemma3", "llama3.3", "llama3.1", "llama3.2", "mistral-small", "mistral-nemo",
                 "phi4-mini", "phi4", "mistral", "llama3")
 
 
@@ -117,7 +117,7 @@ def ollama_auto_model() -> str:
         m = re.search(r":(\d+(?:\.\d+)?)b", n)
         return float(m.group(1)) if m else 0
     for fam in _OLLAMA_PREF:
-        cand = [m for m in ms if m.startswith(fam)]
+        cand = [m for m in ms if m.lower().startswith(fam)]
         if cand:
             return max(cand, key=size)
     return max(ms, key=size)
@@ -350,7 +350,9 @@ def configured(pid, wait: bool = True) -> tuple[bool, str]:
     return True, f"modèle {model_of(pid)}"
 
 
-def providers_in_order(wait: bool = True) -> list[str]:
+def providers_in_order(wait: bool = True, task: str = "") -> list[str]:
+    """Ordre d'essai des IA. task="apply" : l'IA choisie pour postuler (réglage apply_provider) passe en tête ;
+    task="cv" : celle choisie pour les CV et lettres (cv_provider). Sans choix : l'IA principale."""
     s = load_settings()
     primary = s.get("llm_provider", "anthropic")
     if primary not in PROVIDERS:
@@ -361,6 +363,9 @@ def providers_in_order(wait: bool = True) -> list[str]:
     # modèle local (Ollama, LM Studio) : toujours en dernier recours, même sans relais activé, s'il tourne sur le PC
     if s.get("llm_fallback", True) or s.get("local_backup", True):
         order += [p for p in LOCAL if p not in order and configured(p, wait)[0]]
+    chosen = s.get(f"{task}_provider") if task else ""
+    if chosen and chosen in PROVIDERS and chosen != (order[0] if order else None) and configured(chosen, wait)[0]:
+        order = [chosen] + [p for p in order if p != chosen]
     return order
 
 
@@ -377,7 +382,9 @@ def describe(wait: bool = True) -> dict:
                     "needs_key": bool(p.get("key")) or p["kind"] == "anthropic",
                     "has_key": bool(vault.get_api_key() if pid == "anthropic" else vault.get_provider_key(pid)),
                     "url": base_url(pid) if p["kind"] == "openai" else ""}
+    ap, cv = providers_in_order(wait, "apply"), providers_in_order(wait, "cv")
     return {"providers": out, "primary": s.get("llm_provider", "anthropic"), "order": providers_in_order(wait),
+            "apply": ap[0] if ap else "", "cv": cv[0] if cv else "",
             "fallback": s.get("llm_fallback", True)}
 
 
@@ -551,6 +558,50 @@ def _ollama_msgs(msgs: list) -> list:
     return out
 
 
+THINKERS = r"qwen3|deepseek|stageauto|magistral|r1\b|reason|think"
+_NO_THINK_FLAG: set = set()
+
+
+def strip_think(txt: str) -> str:
+    """Retire le raisonnement d'un modèle « à réflexion » (<think>…</think>) : seule la réponse est gardée."""
+    txt = re.sub(r"<think>.*?</think>", "", txt or "", flags=re.S)
+    if "</think>" in txt:  # balise ouvrante fournie par le gabarit du modèle
+        txt = txt.split("</think>")[-1]
+    return txt.strip() if "<think>" not in txt else re.sub(r"<think>.*", "", txt, flags=re.S).strip()
+
+
+def text_tool_calls(content: str, tools: list) -> list:
+    """Appels d'outils qu'un modèle local a écrits en texte au lieu de les rendre structurés. Deux écritures courantes :
+    <tool_call>{"name": …, "arguments": {…}}</tool_call> et <tool_call><function=nom><parameter=clé>valeur</parameter>
+    </function></tool_call> (Qwen 3.5). Les valeurs sont converties selon le schéma de l'outil (booléen, entier)."""
+    schemas = {t["function"]["name"]: (t["function"].get("parameters") or {}).get("properties", {}) for t in tools if t.get("function")}
+    out = []
+    for block in re.findall(r"<tool_call>(.*?)(?:</tool_call>|$)", strip_think(content), flags=re.S):
+        m = re.search(r"<function=([\w.-]+)>(.*?)(?:</function>|$)", block, flags=re.S)
+        if m:
+            name, args = m.group(1), {}
+            for k, v in re.findall(r"<parameter=([\w.-]+)>\n?(.*?)\n?</parameter>", m.group(2), flags=re.S):
+                args[k] = v
+        else:
+            d = _loads(block) or {}
+            name, args = d.get("name") or "", d.get("arguments") or d.get("parameters") or {}
+            if isinstance(args, str):
+                args = _loads(args) or {}
+        if name not in schemas:
+            continue
+        for k, v in list(args.items()):
+            ty = (schemas[name].get(k) or {}).get("type")
+            if isinstance(v, str):
+                if ty == "boolean":
+                    args[k] = v.strip().lower() in ("true", "1", "oui", "yes")
+                elif ty == "integer" and re.fullmatch(r"-?\d+", v.strip()):
+                    args[k] = int(v.strip())
+                elif ty in ("object", "array"):
+                    args[k] = _loads(v) if _loads(v) is not None else v
+        out.append({"function": {"name": name, "arguments": args}})
+    return out
+
+
 def ollama_chat(payload: dict) -> dict:
     """Ollama par son API native (meilleur rendement qu'en mode compatible OpenAI) : contexte long (les consignes du
     skill dépassent les 2 048 / 4 096 jetons par défaut, qui les tronquent sans prévenir), JSON contraint par le schéma,
@@ -558,7 +609,7 @@ def ollama_chat(payload: dict) -> dict:
     s = load_settings()
     body = {"model": payload["model"], "messages": _ollama_msgs(payload.get("messages") or []), "stream": False,
             "keep_alive": "30m",
-            "options": {"num_ctx": int(s.get("local_ctx", 16384)), "temperature": 0.2,
+            "options": {"num_ctx": int(s.get("local_ctx", 16384)), "temperature": float(s.get("local_temperature", 0.3)),
                         "num_predict": int(min(payload.get("max_tokens") or 4096, s.get("foreign_max_tokens", 16000)))}}
     rf = payload.get("response_format") or {}
     if rf.get("type") == "json_schema":
@@ -567,20 +618,31 @@ def ollama_chat(payload: dict) -> dict:
         body["format"] = "json"
     if payload.get("tools"):
         body["tools"] = payload["tools"]
-    if re.search(r"qwen3|deepseek-r1|stageauto|magistral", payload["model"] or "", re.I):
+    thinker = bool(re.search(THINKERS, payload["model"] or "", re.I)) and payload["model"] not in _NO_THINK_FLAG
+    if thinker:
         body["think"] = False  # modèle « à réflexion » : réponse directe, plus rapide et JSON propre
     url = base_url("ollama").replace("/v1", "") + "/api/chat"
     try:
         r = httpx.post(url, json=body, timeout=900)
+        if r.status_code == 400 and thinker and "think" in r.text.lower():
+            # ce modèle n'accepte pas le réglage « think » : on ne l'envoie plus, les balises <think> sont retirées
+            _NO_THINK_FLAG.add(payload["model"])
+            body.pop("think", None)
+            r = httpx.post(url, json=body, timeout=900)
     except httpx.HTTPError:
         raise ProviderError(f"{label('ollama')} : service local injoignable ({url}) — Ollama est-il lancé ?")
     if r.status_code >= 400:
         raise ProviderError(f"{label('ollama')} {r.status_code} : {r.text[:300]}")
     msg = r.json().get("message") or {}
+    raw_calls = msg.get("tool_calls") or []
+    if not raw_calls and payload.get("tools"):  # appel d'outil écrit en texte (gabarit du modèle non reconnu par Ollama)
+        raw_calls = text_tool_calls(msg.get("content") or "", payload["tools"])
+        if raw_calls:
+            msg["content"] = ""
     calls = [{"id": f"call_{i}", "type": "function",
               "function": {"name": tc["function"]["name"], "arguments": json.dumps(tc["function"].get("arguments") or {})}}
-             for i, tc in enumerate(msg.get("tool_calls") or [])]
-    m = {"role": "assistant", "content": msg.get("content") or ""}
+             for i, tc in enumerate(raw_calls)]
+    m = {"role": "assistant", "content": strip_think(msg.get("content") or "")}
     if calls:
         m["tool_calls"] = calls
     j = r.json()
@@ -852,6 +914,9 @@ class Step:
     refusal: bool = False
 
 
+VIEW_MARK = "\nÉléments ("  # début de la liste d'éléments d'une vue de page (agent.render)
+
+
 class ToolConversation:
     def __init__(self, system: str, tools: list, effort="low", order=None):
         self.system, self.tools, self.effort = system, tools, effort
@@ -908,9 +973,35 @@ class ToolConversation:
             return self._step_claude_code()
         return self._step_openai()
 
+    def _compact(self):
+        """Économie de jetons : les anciennes vues de page (liste d'éléments, captures) sont remplacées par une ligne.
+        Seule la dernière vue sert : les références des précédentes ne sont plus valides. Sans cela, chaque étape
+        renvoie à l'IA toutes les pages déjà lues."""
+        def short(c, head=600):
+            if isinstance(c, list):
+                return "(ancienne capture effacée)"
+            if isinstance(c, str) and VIEW_MARK in c:
+                return c.split(VIEW_MARK)[0][:head].rstrip() + "\n(ancienne vue de page effacée : références périmées, relis la page si besoin)"
+            return c
+        for m in self.msgs:
+            c = m.get("content")
+            if m.get("role") == "tool":
+                m["content"] = short(c)
+            elif m.get("role") == "user" and isinstance(c, list):
+                if any(isinstance(b, dict) and b.get("type") == "image_url" for b in c):
+                    m["content"] = "(ancienne capture effacée)"
+                    continue
+                for b in c:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        b["content"] = short(b.get("content"))
+            elif m.get("role") == "user" and isinstance(c, str):
+                m["content"] = short(c, 20000)  # consigne de départ gardée en entier, sans la première vue de page
+
     def results(self, results: list):
         """results : [{id, content (str ou liste avec image), is_error}]"""
         kind = PROVIDERS[self.provider]["kind"] if self.provider else "anthropic"
+        if kind != "claude_code" and any(isinstance(r["content"], list) or VIEW_MARK in str(r["content"]) for r in results):
+            self._compact()
         if kind == "anthropic":
             self.msgs.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": r["id"], "content": r["content"],
                                                            "is_error": bool(r.get("is_error"))} for r in results]})

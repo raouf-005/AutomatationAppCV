@@ -67,7 +67,7 @@ def _conversation():
     global _SYS
     _SYS = _SYS or _system()
     return providers.JsonConversation(_SYS, SCHEMA, max_tokens=32000, effort=load_settings().get("cv_effort", "medium"),
-                                      name="candidature")
+                                      name="candidature", order=providers.providers_in_order(task="cv"))
 
 
 RUNNER = Path(__file__).with_name("skillrun.py")
@@ -291,7 +291,7 @@ def generate(offer: dict) -> dict:
 
 
 def local_first() -> bool:
-    order = providers.providers_in_order()
+    order = providers.providers_in_order(task="cv")
     return bool(order) and order[0] in providers.LOCAL
 
 

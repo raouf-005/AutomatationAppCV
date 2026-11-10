@@ -123,6 +123,8 @@ SNAP_JS = r"""
       if (el.required || el.getAttribute('aria-required') === 'true') it.required = true;
       if (el.getAttribute('aria-invalid') === 'true') it.invalid = true;
       if (el.tagName === 'A') it.href = (el.getAttribute('href') || '').slice(0, 120);
+      // menu, en-tête, pied de page : signalés pour ne pas être envoyés à l'IA à chaque lecture (économie de jetons)
+      if (!inDialog && el.closest && el.closest('header, nav, footer, [role=navigation], [role=banner], [role=contentinfo]')) it.chrome = true;
       items.push(it);
     });
     root.querySelectorAll('*').forEach(e => { if (e.shadowRoot) walk(e.shadowRoot, depth + 1); });

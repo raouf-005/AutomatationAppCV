@@ -186,22 +186,51 @@ la réponse reçue, dans un fichier pour Excel.
 - **Réglages → Tous les paramètres** : chaque réglage de l'application en texte (JSON), y compris ceux sans case ;
   une erreur de format est signalée sans rien changer.
 
-## Modèle local en dernier recours (Ollama, 4 milliards de paramètres)
+## Modèle local (Ollama) : DeepSeek-V4-Pro-Qwen3.5-9B réglé pour StageAuto
 
 Coché par défaut (Réglages → IA) : quand il n'y a plus de jetons (limites atteintes, pas de clé), un modèle local Ollama
-prend le relais, toujours en dernier. **Installation en un double-clic : `installer_modele_local.bat`**. Il installe
-Ollama si besoin, télécharge `qwen3:4b` (environ 2,5 Go ; à défaut `qwen2.5:3b`) et crée le modèle **`stageauto`**,
-réglé pour StageAuto par `ollama/Modelfile` : température basse, contexte de 16 384 jetons, consignes fixes (ne rien
-inventer, répondre en JSON, s'arrêter sur une donnée sensible). L'application choisit `stageauto` en premier ; pour le
-régler autrement, modifie `ollama/Modelfile` puis relance le .bat. C'est un réglage du modèle, pas un réentraînement.
+prend le relais, toujours en dernier ; tu peux aussi le choisir comme IA qui postule ou qui écrit les CV.
+**Installation en un double-clic : `installer_modele_local.bat`**. Il installe Ollama si besoin, télécharge
+`hf.co/Jackrong/DeepSeek-V4-Pro-Qwen3.5-9B-MTP-GGUF:Q4_K_M` (version Ollama du modèle de Jackrong, environ 5,8 Go ; prévoir
+8 Go de mémoire libre, une carte graphique accélère beaucoup) et crée le modèle **`stageauto`**. Si Ollama est trop ancien
+pour ce modèle, le .bat le dit et installe `qwen3:4b` en secours.
 
-Avec ce petit modèle, tout est allégé : les CV et lettres passent par un mode dédié (modèle de CV du domaine choisi sans
-IA, consignes d'environ 2 000 caractères au lieu de 40 000, le modèle écrit seulement l'accroche, le « pourquoi vous » et
-le message ; les puces restent celles de ton profil, un mot-clé inventé ou un outil interdit est écarté). Pour les
-formulaires, l'agent local a 14 étapes au plus (`local_agent_steps`), le « raisonnement » de qwen3 est coupé pour aller
-vite, et une candidature qu'il n'arrive pas à finir passe dans « À postuler toi-même » avec le CV et la lettre prêts.
-Après « Enregistrer et tester l'IA », une **estimation** s'affiche : temps par candidature (CV et lettre, formulaire).
-Ollama est appelé par son API native (contexte `local_ctx`, JSON contraint par un schéma, modèle gardé en mémoire 30 min).
+Réglages du modèle (`ollama/Modelfile`, modifiable puis relancer le .bat) : température 0,3, top_p 0,8, top_k 20 (réponses
+stables : JSON du CV, appels d'outils), contexte de 16 384 jetons, réponse bornée à 2 048 jetons, consignes fixes (ne rien
+inventer, pas de réflexion écrite, un outil par étape, s'arrêter sur une donnée sensible). C'est un réglage du modèle, pas
+un réentraînement.
+
+Côté application, pour qu'il soit rapide : la « réflexion » est coupée (et retirée si le modèle l'écrit quand même), les
+appels d'outils écrits en texte (`<tool_call>…`) sont compris, il ne reçoit que 12 outils au lieu de 16 et des vues de
+page réduites, 14 étapes au plus par formulaire (`local_agent_steps`), et les CV passent par le mode court (environ 2 000
+caractères de consignes au lieu de 40 000 ; les puces restent celles de ton profil). Une candidature qu'il n'arrive pas à
+finir passe dans « À postuler toi-même » avec le CV et la lettre prêts. « Enregistrer et tester l'IA » affiche une
+**estimation** du temps par candidature.
+
+## Choisir l'IA qui postule
+
+Réglages → Intelligence artificielle : **IA qui postule** (formulaires dans Chrome) et **IA qui écrit les CV et les
+lettres** se choisissent séparément ; par défaut, c'est le fournisseur principal. Exemple : Claude Code pour les CV, un
+modèle moins cher ou le modèle local pour remplir les formulaires. Si l'IA choisie est en panne ou à sa limite, les
+autres prennent le relais. La liste « État des fournisseurs » indique qui est (principal), (postule) et (CV).
+
+## Lecture de Chrome allégée (moins de jetons, plus rapide)
+
+- **Une seule vue de page gardée** : à chaque étape, les anciennes pages lues sont remplacées par une ligne dans
+  l'historique envoyé à l'IA (leurs références ne sont plus valides). Avant, chaque étape renvoyait toutes les pages déjà lues.
+- **Vue de page plus courte** : liens de menu, d'en-tête et de pied de page masqués (l'outil find les retrouve), liens
+  répétés listés une fois, adresses des liens réduites au nom du site externe, extrait de texte réduit quand un formulaire
+  est affiché. Sur une page de formulaire courante, la vue est environ 3 à 4 fois plus courte.
+
+## Recherche robuste
+
+- Une recherche qui échoue (page lente, onglet perdu) est relue une fois et n'arrête plus les autres recherches du site ;
+  les offres déjà trouvées sont gardées.
+- Une page sans offre qui ne dit pas « aucun résultat » est rechargée une fois avec une attente plus longue.
+- LinkedIn : si la liste change de structure, repli sur les liens `/jobs/view/…` ; le filtre « 24 dernières heures » est
+  remis s'il a disparu de l'adresse.
+- Offres sans intitulé écartées, doublons d'un même site fusionnés.
+- Un site qui ne liste plus rien 3 passages de suite déclenche une notification « Recherche à vérifier ».
 
 ## Règles (onglet Règles)
 
@@ -415,7 +444,7 @@ stageauto/
 personal/             NON PUBLIÉ (.gitignore) : profile.json, skill/candidature-stage-ciblee, tpl/, seed/
 personal.example/     structure attendue du dossier personnel
 tests/                test hors ligne (formulaire local, agent simulé)
-ollama/Modelfile      réglages du modèle local « stageauto » (qwen3:4b), installé par installer_modele_local.bat
+ollama/Modelfile      réglages du modèle local « stageauto » (DeepSeek-V4-Pro-Qwen3.5-9B), installé par installer_modele_local.bat
 install.bat, StageAuto.bat (lancement discret), StageAuto_debug.bat (avec console), requirements.txt
 ```
 

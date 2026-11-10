@@ -89,30 +89,71 @@ DESC_SEL = ("#job-details p, #job-details li, .jobs-description__content p, .job
             "#jobDescriptionText p, #jobDescriptionText li, main p, main li")
 
 
+EMPTY_RE = re.compile(r"aucun(e)? (offre|r[ée]sultat|emploi)|0 (offre|r[ée]sultat)|no (matching )?(jobs?|results?) found|"
+                      r"pas d.offres? correspond|nous n.avons trouv[ée] aucun", re.I)
+
+
+async def page_empty(tab) -> bool:
+    """La page dit elle-même qu'il n'y a aucun résultat (à distinguer d'une page mal chargée, qu'on relit)."""
+    try:
+        return bool(EMPTY_RE.search(await tab.eval("() => (document.body ? document.body.innerText : '').slice(0, 6000)") or ""))
+    except Exception:
+        return False
+
+
 async def search_pages(browser, urls, pattern, wait_js, make, tour_sel=None, next_page=None, pages=1):
     """Ouvre chaque page de résultats, attend les cartes (au lieu d'une pause fixe) et les lit en un appel. Avec
     next_page, lit les pages suivantes tant qu'elles apportent des offres nouvelles (recherches triées par date et
-    limitées à la période : rien ne passe entre deux pages)."""
+    limitées à la période : rien ne passe entre deux pages).
+    Robuste : une recherche qui échoue (page lente, onglet perdu) n'arrête pas les autres ; une page sans carte qui ne
+    dit pas « aucun résultat » est relue une fois ; une offre sans intitulé est écartée."""
     out = {}
     tab = await browser.new_tab()
+    failed = 0
     try:
         for base in urls:
             for n in range(1, pages + 1):
                 url = base if n == 1 else next_page(base, n)
-                await tab.goto(url)
-                await tab.wait_for(wait_js, timeout=8)
-                if tour_sel and n == 1:
-                    await tab.tour(tour_sel, "Offre", 4)
+                cards = []
+                for attempt in (1, 2):
+                    try:
+                        await tab.goto(url)
+                        await tab.wait_for(wait_js, timeout=8 if attempt == 1 else 12)
+                        cards = await tab.eval(LINKS_JS, pattern) or []
+                    except NeedLogin:
+                        raise
+                    except Exception as e:
+                        log(f"recherche : {e.__class__.__name__} sur {url[:90]} (essai {attempt})")
+                        cards = []
+                        try:
+                            await tab.close()
+                        except Exception:
+                            pass
+                        tab = await browser.new_tab()
+                    if cards or await page_empty(tab):
+                        break
+                else:
+                    failed += 1
+                if tour_sel and n == 1 and cards:
+                    try:
+                        await tab.tour(tour_sel, "Offre", 4)
+                    except Exception:
+                        pass
                 fresh = 0
-                for c in await tab.eval(LINKS_JS, pattern) or []:
+                for c in cards:
                     o = make(c)
-                    if o:
+                    if o and (o.get("title") or "").strip():
                         fresh += o["key"] not in out
                         out[o["key"]] = o
                 if fresh < 5 or not next_page:  # page presque vide ou déjà vue : fin des résultats
                     break
     finally:
-        await tab.close()
+        try:
+            await tab.close()
+        except Exception:
+            pass
+    if failed and not out:
+        raise RuntimeError(f"{failed} page(s) de résultats illisibles")
     return list(out.values())
 
 
@@ -174,6 +215,20 @@ class SiteDef:
 
 
 # ----------------------------------------------------------------------------------- LinkedIn
+# Cartes de la liste d'emplois LinkedIn : attributs data-job-id d'abord ; si LinkedIn change sa page, repli sur les
+# liens /jobs/view/<id> (la carte est le bloc de liste qui contient le lien).
+LI_CARDS_JS = r"""() => { const out = {};
+  const add = (id, el) => { if (!/^\d+$/.test(id || '')) return;
+    const lines = (el.innerText || '').split('\n').map(s => s.trim()).filter(s => s);
+    if (lines.length && (!out[id] || lines.length > out[id].lines.length)) out[id] = {id, lines}; };
+  document.querySelectorAll('[data-job-id], [data-occludable-job-id]').forEach(el =>
+    add(el.getAttribute('data-job-id') || el.getAttribute('data-occludable-job-id'), el));
+  if (!Object.keys(out).length)
+    document.querySelectorAll('a[href*="/jobs/view/"]').forEach(a => { const m = a.href.match(/\/jobs\/view\/(?:[^/?]*-)?(\d+)/);
+      if (m) add(m[1], a.closest('li, article, [class*=card]') || a); });
+  return Object.values(out); }"""
+
+
 class LinkedIn(SiteDef):
     async def login_state(self, tab):
         # 1. cookie de session (HttpOnly, lu par Chrome) : indépendant de l'apparence de la page
@@ -205,42 +260,70 @@ class LinkedIn(SiteDef):
                 urls.append(u + "&start=25")  # passage complet : 2e page de chaque recherche
         found = {}
         tab = await browser.new_tab()
+        SEL = "[data-job-id], [data-occludable-job-id]"
+        failed = 0
         try:
             for url in urls:  # 3 recherches au plus (2 pages en passage complet)
-                await tab.goto(url)
-                await tab.wait_for("() => document.querySelectorAll('[data-job-id], [data-occludable-job-id]').length"
-                                   " || /login|authwall|\\/uas\\/|checkpoint/.test(location.href)", timeout=8)
-                if re.search(r"login|authwall|/uas/|checkpoint", await tab.url()):
-                    raise NeedLogin("LinkedIn demande de se reconnecter")
-                prev = -1
-                for _ in range(6):  # défilement tant que de nouvelles cartes apparaissent
-                    n = await tab.eval("() => { const l = document.querySelector('.jobs-search-results-list, .scaffold-layout__list > div, .scaffold-layout__list');"
-                                       " if (l) l.scrollBy(0, 1200); else window.scrollBy(0, 1200);"
-                                       " return document.querySelectorAll('[data-job-id], [data-occludable-job-id]').length; }")
-                    if n == prev:
+                cards = []
+                for attempt in (1, 2):  # une page sans carte qui ne dit pas « aucun résultat » est relue une fois
+                    try:
+                        await tab.goto(url)
+                        await tab.wait_for(f"() => document.querySelectorAll('{SEL}, a[href*=\"/jobs/view/\"]').length"
+                                           " || /login|authwall|\\/uas\\/|checkpoint/.test(location.href)",
+                                           timeout=8 if attempt == 1 else 14)
+                        if re.search(r"login|authwall|/uas/|checkpoint", await tab.url()):
+                            raise NeedLogin("LinkedIn demande de se reconnecter")
+                        if "f_TPR=" not in await tab.url():  # LinkedIn a retiré le filtre « 24 dernières heures » : on le remet
+                            await tab.goto(url)
+                            await tab.wait_for(f"() => document.querySelectorAll('{SEL}').length", timeout=8)
+                        prev = -1
+                        for _ in range(6):  # défilement tant que de nouvelles cartes apparaissent
+                            n = await tab.eval("() => { const l = document.querySelector('.jobs-search-results-list, .scaffold-layout__list > div, .scaffold-layout__list');"
+                                               " if (l) l.scrollBy(0, 1200); else window.scrollBy(0, 1200);"
+                                               f" return document.querySelectorAll('{SEL}, a[href*=\"/jobs/view/\"]').length; }}")
+                            if n == prev:
+                                break
+                            prev = n
+                            await asyncio.sleep(0.45)
+                        cards = await tab.eval(LI_CARDS_JS) or []
+                    except NeedLogin:
+                        raise
+                    except Exception as e:
+                        log(f"recherche LinkedIn : {e.__class__.__name__} {str(e)[:80]} (essai {attempt})")
+                        cards = []
+                        try:
+                            await tab.close()
+                        except Exception:
+                            pass
+                        tab = await browser.new_tab()
+                    if cards or await page_empty(tab):
                         break
-                    prev = n
-                    await asyncio.sleep(0.45)
-                await tab.tour("[data-job-id], [data-occludable-job-id]", "Offre", 5)
-                cards = await tab.eval(r"""() => { const out = {};
-                  document.querySelectorAll('[data-job-id], [data-occludable-job-id]').forEach(el => {
-                    const id = el.getAttribute('data-job-id') || el.getAttribute('data-occludable-job-id');
-                    if (!/^\d+$/.test(id || '')) return;
-                    const lines = (el.innerText || '').split('\n').map(s => s.trim()).filter(s => s);
-                    if (lines.length) out[id] = {id, lines}; });
-                  return Object.values(out); }""")
-                for c in cards or []:
+                else:
+                    failed += 1
+                if cards:
+                    try:
+                        await tab.tour(SEL, "Offre", 5)
+                    except Exception:
+                        pass
+                for c in cards:
                     L = c["lines"]
                     if len(L) > 1 and L[1] == L[0]:
                         L = L[1:]
                     txt = " ".join(L)
+                    if not L or not L[0].strip():
+                        continue
                     found[c["id"]] = {"key": f"li:{c['id']}", "site": "linkedin", "title": L[0].replace(" avec vérification", ""),
                                       "company": L[1] if len(L) > 1 else "", "location": L[2] if len(L) > 2 else "",
                                       "url": f"https://www.linkedin.com/jobs/view/{c['id']}/", "recent": True,
                                       "already": bool(ALREADY_RE.search(txt)), "source": "LinkedIn", "card": txt[:500],
                                       "easy": bool(re.search(r"Candidature simplifiée|Easy Apply", txt))}
         finally:
-            await tab.close()
+            try:
+                await tab.close()
+            except Exception:
+                pass
+        if failed and not found:
+            raise RuntimeError(f"{failed} recherche(s) LinkedIn illisibles")
         return list(found.values())
 
     async def details(self, tab, offer):

@@ -120,6 +120,14 @@ SITE_HINTS = {
 }
 
 
+# boutons et liens d'en-tête / de pied de page gardés dans la vue : ils servent à postuler, à se connecter, aux cookies
+KEEP_RE = re.compile(r"postul|candidat|apply|accept|refus|reject|continuer|continue|cookie|connexion|connecter|sign ?in|log ?in|"
+                     r"fermer|close|suivant|next|envoyer|submit", re.I)
+# outils proposés à un petit modèle local : l'essentiel, pour des consignes courtes et des appels fiables
+LOCAL_TOOLS = ("read_page", "find", "click", "type", "select", "check", "upload", "auto_fill", "fill_credentials", "press",
+               "wait", "finish")
+
+
 def clean_name(name: str) -> str:
     """Nom de bouton réutilisable d'une offre à l'autre (« Candidature simplifiée pour Stage X » -> « Candidature simplifiée »)."""
     n = re.split(r"\s+(pour|for|à|to)\s+|\s+[–-]\s+", name or "", maxsplit=1)[0]
@@ -140,10 +148,14 @@ class Agent:
         self.extra_intro = ""
         self._warned = None
         self.checked_before_submit = False
+        self.small = False       # petit modèle local : vues de page réduites, moins d'outils
 
     # --------------------------------------------------------------------------- rendu d'une page
     @staticmethod
-    def render(snap, limit=9000):
+    def render(snap, limit=9000, text_max=1800):
+        """Vue de page envoyée à l'IA, la plus courte possible : les liens de menu, d'en-tête et de pied de page sont
+        masqués (find les retrouve), un lien répété n'apparaît qu'une fois, l'adresse d'un lien se réduit à son site s'il
+        est externe, et l'extrait de texte est court quand un formulaire est affiché."""
         out = [f"URL : {snap['url']}", f"Titre : {snap['title']}"]
         if snap.get("dialog"):
             out.append("[dialogue modal ouvert : seul son contenu est listé]")
@@ -151,8 +163,22 @@ class Agent:
             out.append("[CAPTCHA / vérification détectée]")
         if snap.get("errors"):
             out.append("Erreurs affichées : " + " | ".join(snap["errors"]))
-        out.append(f"Éléments ({len(snap['items'])}{'+' if snap.get('truncated') else ''}) :")
+        host = re.sub(r"^https?://([^/]+).*", r"\1", snap.get("url") or "")
+        items, hidden, seen_links = [], 0, set()
         for it in snap["items"]:
+            if it["role"] == "link":
+                k = (it.get("name") or "").strip().lower()
+                if (it.get("chrome") and not KEEP_RE.search(k)) or (k and k in seen_links):
+                    hidden += 1
+                    continue
+                seen_links.add(k)
+            elif it.get("chrome") and it["role"] == "button" and not KEEP_RE.search(it.get("name") or ""):
+                hidden += 1
+                continue
+            items.append(it)
+        fields = sum(1 for it in items if it["role"].startswith(("textbox", "textarea", "select", "combobox", "file", "radio", "checkbox")))
+        out.append(f"Éléments ({len(items)}{'+' if snap.get('truncated') else ''}) :")
+        for it in items:
             s = f"{it['ref']} {it['role']} \"{it['name']}\""
             if it.get("value"):
                 s += f" = \"{it['value']}\""
@@ -169,15 +195,25 @@ class Agent:
             if it.get("invalid"):
                 s += " !invalide"
             if it.get("href") and it["role"] == "link":
-                s += f" -> {it['href'][:70]}"
+                m = re.match(r"^https?://([^/]+)", it["href"])
+                if m and m.group(1) != host:
+                    s += f" -> {m.group(1)}"
+                elif not it.get("name"):
+                    s += f" -> {it['href'][:60]}"
             out.append(s)
+        if hidden:
+            out.append(f"({hidden} liens de menu ou répétés masqués : find pour les retrouver)")
         txt = "\n".join(out)
         if len(txt) > limit:
             txt = txt[:limit] + "\n… (liste tronquée : utilise find)"
-        return txt + "\n\nTexte (extrait) :\n" + (snap.get("text") or "")[:1800]
+        if fields >= 3:  # formulaire affiché : les champs suffisent, l'extrait de texte est réduit
+            text_max = min(text_max, 600)
+        return txt + "\n\nTexte (extrait) :\n" + (snap.get("text") or "")[:text_max]
 
     def _view(self, snap, limit=9000):
         self.refs = {it["ref"]: it for it in snap["items"]}
+        if self.small:  # petit modèle local : vues plus courtes (contexte limité, lecture plus rapide)
+            return self.render(snap, min(limit, 4500), 700)
         return self.render(snap, limit)
 
     def _remember(self, label, options, value, section=""):
@@ -375,9 +411,12 @@ class Agent:
     async def run(self, goal: str, max_steps: int | None = None) -> dict:
         s = load_settings()
         max_steps = max_steps or s.get("agent_max_steps", 40)
-        order = providers.providers_in_order()
+        order = providers.providers_in_order(task="apply")  # l'IA choisie pour postuler d'abord (Réglages → IA)
+        tools = TOOLS
         if order and order[0] in providers.LOCAL:  # petit modèle local : peu d'étapes, sinon l'offre est rendue à la main
             max_steps = min(max_steps, int(s.get("local_agent_steps", 14)))
+            self.small = True
+            tools = [t for t in TOOLS if t["name"] in LOCAL_TOOLS]
         notes = db.method(self.site).get("notes", [])
         hint = SITE_HINTS.get(self.site, "")
         recipe = db.method(self.recipe_key).get("recipe") if self.recipe_key else None
@@ -393,7 +432,7 @@ class Agent:
                  + ("MODE VALIDATION : remplis tout mais ne clique PAS l'envoi final ; appelle finish(status='ready').\n"
                     if not self.auto else "")
                  + "\nPage actuelle :\n" + self._view(first))
-        conv = providers.ToolConversation(system(), TOOLS, effort=s.get("agent_effort", "low"))
+        conv = providers.ToolConversation(system(), tools, effort=s.get("agent_effort", "low"), order=order)
         conv.user(intro)
         t0 = time.time()
         nudged = False

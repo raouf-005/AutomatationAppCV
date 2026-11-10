@@ -121,23 +121,43 @@ async def gather_offers(browser, ids, hours, quick=False):
 
     async def one(sid):
         async with sem:
-            try:
+            lst = None
+            for attempt in (1, 2):  # une recherche qui plante est relancée une fois avant d'être abandonnée
                 try:
-                    lst = await SITES[sid].search(browser, hours, quick=quick)
-                except TypeError:  # site ajouté sans le mode veille
-                    lst = await SITES[sid].search(browser, hours)
-            except NeedLogin as e:  # mur de connexion pendant la recherche : vraiment déconnecté
-                STATE["connections"][sid] = False
-                STATE.setdefault("connections_info", {})[sid] = str(e)
-                if sid not in STATE["needs_login"]:
-                    STATE["needs_login"].append(sid)
-                log(f"{SITES[sid].name} : {e}")
-                return
-            except Exception as e:
-                log(f"recherche {sid} : {e.__class__.__name__} {str(e)[:100]}")
-                return
+                    try:
+                        lst = await SITES[sid].search(browser, hours, quick=quick)
+                    except TypeError:  # site ajouté sans le mode veille
+                        lst = await SITES[sid].search(browser, hours)
+                    break
+                except NeedLogin as e:  # mur de connexion pendant la recherche : vraiment déconnecté
+                    STATE["connections"][sid] = False
+                    STATE.setdefault("connections_info", {})[sid] = str(e)
+                    if sid not in STATE["needs_login"]:
+                        STATE["needs_login"].append(sid)
+                    log(f"{SITES[sid].name} : {e}")
+                    return
+                except Exception as e:
+                    log(f"recherche {sid} : {e.__class__.__name__} {str(e)[:100]}" + (" — nouvel essai" if attempt == 1 else ""))
+                    await asyncio.sleep(2)
             if sid == "linkedin":
                 STATE["linkedin_last_search"] = dt.datetime.now()
+            # recherche vide ou en panne plusieurs passages de suite : la page du site a peut-être changé
+            zero = STATE.setdefault("search_zero", {})
+            zero[sid] = 0 if lst else zero.get(sid, 0) + 1
+            if zero[sid] >= 3 and db.once(f"search_zero:{sid}:{db.today()}"):
+                msg = f"{SITES[sid].name} : aucune offre listée depuis {zero[sid]} passages (page changée ou session expirée ?)"
+                log("⚠ " + msg)
+                push("Recherche à vérifier", msg)
+            if lst is None:
+                return
+            # la même offre vue par deux recherches du site : une seule, la carte la plus complète
+            uniq = {}
+            for o in lst:
+                if not (o.get("key") and (o.get("title") or "").strip()):
+                    continue
+                if o["key"] not in uniq or len(o.get("card") or "") > len(uniq[o["key"]].get("card") or ""):
+                    uniq[o["key"]] = o
+            lst = list(uniq.values())
             log(f"{SITES[sid].name} : {len(lst)} offres listées")
             db.coverage_add(sid, listed=len(lst))
             found.extend(lst)
